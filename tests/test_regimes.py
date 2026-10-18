@@ -190,3 +190,124 @@ def test_inputs(data):
 def test_settings_and_overrides():
     model = RegimeModel(RegimeSettings(tol=0.1), n_regimes=2)
     assert (model.settings.tol, model.settings.n_regimes) == (0.1, 2)
+
+
+# --------------------------------------------------------------------- labels
+
+
+def test_regimes_are_labelled_from_one(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    for frame in (fit.means, fit.transmat, fit.variances):
+        assert list(frame.index) == [1, 2]
+    assert list(fit.transmat.columns) == [1, 2]
+    assert list(fit.posteriors.columns) == [1, 2]
+    assert list(fit.forecast().index) == [1, 2]
+    np.testing.assert_allclose(fit.covariance(2).to_numpy(), fit.covariances[1])
+    assert list(fit.covariance(1).index) == ["Mkt-RF", "SMB"]
+    with pytest.raises(KeyError):
+        fit.covariance(0)
+
+
+def test_relabel_permutes_everything_consistently(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    swapped = fit.relabel([2, 1])
+    np.testing.assert_allclose(swapped.means.to_numpy(), fit.means.to_numpy()[[1, 0]])
+    np.testing.assert_allclose(
+        swapped.transmat.to_numpy(), fit.transmat.to_numpy()[np.ix_([1, 0], [1, 0])]
+    )
+    np.testing.assert_allclose(
+        swapped.posteriors.to_numpy(), fit.posteriors.to_numpy()[:, [1, 0]]
+    )
+    np.testing.assert_allclose(
+        swapped.forecast().to_numpy(), fit.forecast().to_numpy()[[1, 0]]
+    )
+    np.testing.assert_allclose(swapped.covariance(1), fit.covariance(2))
+    assert swapped.loglike == fit.loglike
+    # The relabelled model still describes the data the same way.
+    np.testing.assert_allclose(
+        swapped._model.predict_proba(X.to_numpy()),
+        swapped.posteriors.to_numpy(),
+        atol=1e-10,
+    )
+    with pytest.raises(ValueError):
+        fit.relabel([1, 1])
+    with pytest.raises(ValueError):
+        fit.relabel([0, 1])
+
+
+def test_warm_start_keeps_the_labels_of_a_relabelled_fit(data):
+    X, _ = data
+    model = RegimeModel(n_regimes=2)
+    first = model.fit(X.iloc[:300])
+    plain = model.fit(X.iloc[:301], start_from=first)
+    swapped = model.fit(X.iloc[:301], start_from=first.relabel([2, 1]))
+    np.testing.assert_allclose(
+        swapped.posteriors.to_numpy(),
+        plain.posteriors.to_numpy()[:, [1, 0]],
+        atol=1e-8,
+    )
+
+
+def test_alignment_undoes_a_relabelling(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    swapped = fit.relabel([2, 1])
+    assert swapped.alignment(fit).to_dict() == {1: 2, 2: 1}
+    np.testing.assert_allclose(
+        swapped.align_to(fit).means.to_numpy(), fit.means.to_numpy()
+    )
+
+
+def test_sort_by_a_factor_mean(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    down = fit.sort_by("Mkt-RF")
+    assert down.means["Mkt-RF"].is_monotonic_decreasing
+    up = fit.sort_by("Mkt-RF", ascending=True)
+    assert up.means["Mkt-RF"].is_monotonic_increasing
+    # Sorting is idempotent and does not depend on the starting numbering.
+    np.testing.assert_allclose(
+        fit.relabel([2, 1]).sort_by("Mkt-RF").means.to_numpy(), down.means.to_numpy()
+    )
+    with pytest.raises(KeyError):
+        fit.sort_by("HML")
+
+
+# ---------------------------------------------------------- information criteria
+
+
+def test_parameter_count():
+    X, _ = _simulate(n=300)
+    diag = RegimeModel(n_regimes=2).fit(X)
+    full = RegimeModel(n_regimes=2, covariance="full").fit(X)
+    assert diag.n_params == 2 * 1 + 2 * 2 + 2 * 2
+    assert full.n_params == 2 * 1 + 2 * 2 + 2 * 3
+
+
+def test_information_criteria_formulas(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    ll, p, n = fit.loglike, fit.n_params, fit.nobs
+    assert fit.aic == pytest.approx(-2 * ll + 2 * p)
+    assert fit.bic == pytest.approx(-2 * ll + p * np.log(n))
+    assert fit.hqic == pytest.approx(-2 * ll + 2 * p * np.log(np.log(n)))
+    post = fit.posteriors.to_numpy()
+    entropy = -np.sum(post * np.log(np.clip(post, 1e-300, 1)))
+    assert fit.icl == pytest.approx(fit.bic + 2 * entropy)
+    assert fit.icl >= fit.bic
+
+
+def test_select_regimes_finds_two_regimes(data):
+    from rwls import select_regimes
+
+    X, _ = data
+    sel = select_regimes(X, n_regimes=[1, 2, 3], n_starts=3)
+    assert list(sel.table.index) == [1, 2, 3]
+    assert {"loglike", "n_params", "AIC", "BIC", "HQIC", "ICL"} <= set(
+        sel.table.columns
+    )
+    assert sel.selected["BIC"] == 2
+    assert set(sel.fits) == {1, 2, 3}
+    assert sel.fits[2].settings.n_regimes == 2
