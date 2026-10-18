@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rwls"
+version = "0.0.1"
+description = "Regime-weighted least squares: regime-dependent factor models estimated with hidden Markov posterior probabilities."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Francisco Ibanez" }]
+keywords = ["financial econometrics", "factor models", "regime switching", "hidden Markov model", "weighted least squares"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rwls"]
