@@ -347,3 +347,93 @@ def test_summary_annualizes_on_request(data):
         vols.to_numpy(), np.sqrt(12 * fit.variances.T.to_numpy())
     )
     assert "Factor means (annualized)" in str(fit.summary(periods_per_year=12))
+
+
+# ------------------------------------------------------------------- selection
+
+
+def _fake(means, trans):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(means_=np.array(means), transmat_=np.array(trans))
+
+
+A = ([[0.01], [-0.02]], [[0.9, 0.1], [0.2, 0.8]])
+B = ([[0.03], [-0.01]], [[0.6, 0.4], [0.5, 0.5]])
+
+
+def test_group_optima_matches_regardless_of_labels():
+    from rwls.regimes import _group_optima
+
+    a_swapped = ([[-0.02], [0.01]], [[0.8, 0.2], [0.1, 0.9]])
+    fits = [
+        (10.0, _fake(*B), 0),  # highest likelihood, reached once
+        (9.0, _fake(*A), 1),
+        (8.9, _fake(*a_swapped), 2),  # same optimum as A, labels swapped
+        (8.8, _fake([[0.0105], [-0.0201]], [[0.91, 0.09], [0.2, 0.8]]), 3),
+    ]
+    groups = _group_optima(fits, 0, 0.0025, 0.05)
+    assert [len(g) for g in groups] == [3, 1]
+    assert [f[2] for f in groups[0]] == [1, 2, 3]  # best fit of the group first
+    assert groups[1][0][2] == 0
+
+
+def test_choose_best_and_modal():
+    from rwls.regimes import _choose
+
+    results = [
+        (10.0, _fake(*B)),
+        (9.0, _fake(*A)),
+        (8.9, _fake(*A)),
+        (-np.inf, None),
+    ]
+    best, info = _choose(results, RegimeSettings(n_regimes=2, seed=0), ["Mkt-RF"])
+    assert best is results[0][1]
+    assert info == {
+        "starts": 4,
+        "healthy": 3,
+        "distinct": 2,
+        "reached": 1,
+        "selection": "best",
+    }
+    modal, info = _choose(
+        results, RegimeSettings(n_regimes=2, selection="modal"), ["Mkt-RF"]
+    )
+    assert modal is results[1][1]
+    assert (info["reached"], info["selection"]) == (2, "modal")
+    with pytest.raises(RuntimeError):
+        _choose([(-np.inf, None)], RegimeSettings(), ["Mkt-RF"])
+
+
+def test_order_factor_by_name_or_position():
+    from rwls.regimes import _factor_position
+
+    assert _factor_position("SMB", ["Mkt-RF", "SMB"]) == 1
+    assert _factor_position(0, ["Mkt-RF", "SMB"]) == 0
+    with pytest.raises(ValueError):
+        _factor_position("HML", ["Mkt-RF", "SMB"])
+    with pytest.raises(ValueError):
+        _factor_position(2, ["Mkt-RF", "SMB"])
+
+
+def test_fits_record_their_starts(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2, n_starts=4, selection="modal").fit(X)
+    assert fit.starts["starts"] == 4
+    assert fit.starts["selection"] == "modal"
+    assert 1 <= fit.starts["reached"] <= fit.starts["healthy"] <= 4
+    assert "Model reached most often of 4 starts" in " ".join(
+        str(fit.summary()).split()
+    )
+    refit = RegimeModel(n_regimes=2).fit(X, start_from=fit)
+    assert refit.starts is None
+    assert "Refitted from an earlier fit" in " ".join(str(refit.summary()).split())
+    assert fit.relabel([2, 1]).starts == fit.starts
+
+
+def test_select_regimes_reports_the_starts(data):
+    from rwls import select_regimes
+
+    X, _ = data
+    sel = select_regimes(X, n_regimes=[2], n_starts=3)
+    assert {"distinct optima", "reached"} <= set(sel.table.columns)

@@ -78,12 +78,12 @@ class RegimeModel:
         if start_from is not None:
             if start_from.n_regimes != s.n_regimes or start_from.factor_names != names:
                 raise ValueError("start_from must have the same regimes and factors")
-            mdl = _fit_warm(values, start_from._model, s)
+            mdl, starts = _fit_warm(values, start_from._model, s), None
             if not _healthy(mdl):
-                mdl = _fit_cold(values, s, n_jobs)
+                mdl, starts = _fit_cold(values, s, n_jobs, names)
         else:
-            mdl = _fit_cold(values, s, n_jobs)
-        return RegimeFit._from_model(mdl, values, index, names, s)
+            mdl, starts = _fit_cold(values, s, n_jobs, names)
+        return RegimeFit._from_model(mdl, values, index, names, s, starts)
 
     def _build(self, n_features: int) -> GaussianHMM:
         return _build_hmm(self.settings, n_features)
@@ -123,6 +123,11 @@ class RegimeFit:
         Number of EM iterations of the final fit.
     converged : bool
         Whether EM met the tolerance before reaching ``max_iter``.
+    starts : dict or None
+        For a cold-start fit: the number of starts, how many passed the health
+        check, how many distinct optima they reached, how many reached the
+        selected model, and the selection rule. None for a refit from an
+        earlier fit.
     """
 
     settings: RegimeSettings
@@ -137,9 +142,10 @@ class RegimeFit:
     n_iter: int
     converged: bool
     _model: GaussianHMM = field(repr=False)
+    starts: dict | None = field(default=None, repr=False)
 
     @classmethod
-    def _from_model(cls, mdl, values, index, names, settings) -> RegimeFit:
+    def _from_model(cls, mdl, values, index, names, settings, starts=None) -> RegimeFit:
         regimes = _labels(mdl.n_components)
         return cls(
             settings=settings,
@@ -156,6 +162,7 @@ class RegimeFit:
             n_iter=int(mdl.monitor_.iter),
             converged=bool(mdl.monitor_.converged),
             _model=mdl,
+            starts=starts,
         )
 
     # ------------------------------------------------------------- basic quantities
@@ -276,6 +283,7 @@ class RegimeFit:
             n_iter=self.n_iter,
             converged=self.converged,
             _model=mdl,
+            starts=self.starts,
         )
 
     def alignment(self, reference: RegimeFit) -> np.ndarray:
@@ -407,12 +415,12 @@ class RegimeFit:
             else f"EM stopped after {self.n_iter} iterations without meeting the "
             "tolerance."
         )
-        starts = "1 start" if s.n_starts == 1 else f"best of {s.n_starts} starts"
+        starts = _describe_starts(self.starts)
         out.add_notes(
             [
                 status,
-                f"Variance prior {s.variance_prior:g}, tolerance {s.tol:g}, {starts} "
-                f"(seed {s.seed}).",
+                f"Variance prior {s.variance_prior:g}, tolerance {s.tol:g}, first "
+                f"seed {s.seed}. {starts}",
                 "Duration is the expected number of periods in a regime once "
                 "entered; Occupancy is the average posterior probability; Assigned "
                 "is the share of periods in which the regime is the most probable.",
@@ -459,8 +467,8 @@ def select_regimes(
 ) -> RegimeSelection:
     """Fit models with each number of regimes and compare them.
 
-    Each model is fitted from ``n_starts`` cold starts and the start with the
-    highest likelihood is kept, as in :meth:`RegimeModel.fit`.
+    Each model is fitted from ``n_starts`` cold starts and one fit is kept by
+    the rule in ``settings.selection``, as in :meth:`RegimeModel.fit`.
 
     Parameters
     ----------
@@ -494,13 +502,12 @@ def select_regimes(
     fits, rows = {}, {}
     for m in counts:
         runs = [r for (mm, _, _), r in zip(jobs, results, strict=True) if mm == m]
-        good = [r for r in runs if r[1] is not None]
-        if not good:
+        s_m = base.replace(n_regimes=m, n_starts=n_starts)
+        try:
+            mdl, starts = _choose(runs, s_m, names)
+        except RuntimeError:
             continue
-        _, mdl = max(good, key=lambda r: r[0])
-        fit = RegimeFit._from_model(
-            mdl, values, index, names, base.replace(n_regimes=m, n_starts=n_starts)
-        )
+        fit = RegimeFit._from_model(mdl, values, index, names, s_m, starts)
         fits[m] = fit
         rows[m] = {
             "loglike": fit.loglike,
@@ -509,7 +516,9 @@ def select_regimes(
             "BIC": fit.bic,
             "HQIC": fit.hqic,
             "ICL": fit.icl,
-            "healthy starts": len(good),
+            "healthy starts": starts["healthy"],
+            "distinct optima": starts["distinct"],
+            "reached": starts["reached"],
         }
     table = pd.DataFrame.from_dict(rows, orient="index")
     table.index.name = "n_regimes"
@@ -555,7 +564,8 @@ def _fit_start(values: np.ndarray, s: RegimeSettings, seed: int):
     return float(mdl.score(values)), mdl
 
 
-def _fit_cold(values: np.ndarray, s: RegimeSettings, n_jobs: int) -> GaussianHMM:
+def _fit_cold(values: np.ndarray, s: RegimeSettings, n_jobs: int, names):
+    """Fit from ``n_starts`` cold starts and choose one by ``s.selection``."""
     seeds = [s.seed + j for j in range(s.n_starts)]
     if s.n_starts == 1 or n_jobs == 1:
         results = [_fit_start(values, s, seed) for seed in seeds]
@@ -563,13 +573,87 @@ def _fit_cold(values: np.ndarray, s: RegimeSettings, n_jobs: int) -> GaussianHMM
         results = Parallel(n_jobs=n_jobs)(
             delayed(_fit_start)(values, s, seed) for seed in seeds
         )
-    best, best_ll = None, -np.inf
-    for ll, mdl in results:
-        if mdl is not None and ll > best_ll:
-            best, best_ll = mdl, ll
-    if best is None:
+    return _choose(results, s, names)
+
+
+def _choose(results, s: RegimeSettings, names):
+    """The selected model among the starts' results, and a record of the starts.
+
+    ``results`` holds ``(log-likelihood, model)`` per start, in seed order, with
+    ``(-inf, None)`` for starts that failed the health check.
+    """
+    fits = [
+        (ll, mdl, s.seed + j) for j, (ll, mdl) in enumerate(results) if mdl is not None
+    ]
+    if not fits:
         raise RuntimeError("the regime model failed to converge from a cold start")
-    return best
+    order = _factor_position(s.modal_order_factor, names)
+    groups = _group_optima(fits, order, s.modal_mean_tol, s.modal_transition_tol)
+    if s.selection == "modal":
+        group = groups[0]
+    else:
+        best = max(fits, key=lambda f: f[0])
+        group = next(g for g in groups if g[0] is best)
+    starts = {
+        "starts": len(results),
+        "healthy": len(fits),
+        "distinct": len(groups),
+        "reached": len(group),
+        "selection": s.selection,
+    }
+    return group[0][1], starts
+
+
+def _group_optima(fits, order, mean_tol, trans_tol):
+    """Group fits that reached the same optimum.
+
+    With regimes ordered by their mean on factor ``order``, two fits reached the
+    same optimum if every regime mean agrees within ``mean_tol`` and every
+    transition probability within ``trans_tol``. Fits are visited from the
+    highest likelihood down, and each joins the first group whose best fit it
+    matches. Groups are returned largest first, each best fit first.
+    """
+
+    def signature(m):
+        o = np.argsort(m.means_[:, order])[::-1]
+        return m.means_[o], m.transmat_[np.ix_(o, o)]
+
+    groups = []
+    for fit in sorted(fits, key=lambda f: -f[0]):
+        sig = signature(fit[1])
+        for g in groups:
+            if (
+                np.abs(g[0][0] - sig[0]).max() < mean_tol
+                and np.abs(g[0][1] - sig[1]).max() < trans_tol
+            ):
+                g[1].append(fit)
+                break
+        else:
+            groups.append([sig, [fit]])
+    return [g[1] for g in sorted(groups, key=lambda g: -len(g[1]))]
+
+
+def _factor_position(factor, names) -> int:
+    if isinstance(factor, str):
+        if factor not in names:
+            raise ValueError(f"modal_order_factor {factor!r} is not a factor")
+        return names.index(factor)
+    if factor >= len(names):
+        raise ValueError("modal_order_factor is beyond the last factor")
+    return int(factor)
+
+
+def _describe_starts(starts: dict | None) -> str:
+    if starts is None:
+        return "Refitted from an earlier fit."
+    n, rule = starts["starts"], starts["selection"]
+    if n == 1:
+        return "Fitted from a single start."
+    what = "Highest-likelihood fit" if rule == "best" else "Model reached most often"
+    return (
+        f"{what} of {n} starts, reached by {starts['reached']}; "
+        f"{starts['distinct']} distinct optima."
+    )
 
 
 def _fit_warm(values: np.ndarray, previous: GaussianHMM, s: RegimeSettings):

@@ -102,3 +102,20 @@ def test_integer_fields_accept_numpy_integers_and_reject_booleans():
     assert RegimeSettings(n_regimes=np.int64(2)).n_regimes == 2
     with pytest.raises(ValueError):
         RegimeSettings(n_regimes=True)
+
+
+def test_selection_defaults_and_validation():
+    s = RegimeSettings()
+    assert s.selection == "best"
+    assert s.modal_order_factor == 0
+    assert (s.modal_mean_tol, s.modal_transition_tol) == (0.0025, 0.05)
+    assert RegimeSettings(modal_order_factor="Mkt-RF").modal_order_factor == "Mkt-RF"
+    for bad in (
+        {"selection": "median"},
+        {"modal_order_factor": -1},
+        {"modal_order_factor": 1.5},
+        {"modal_mean_tol": 0.0},
+        {"modal_transition_tol": -0.1},
+    ):
+        with pytest.raises(ValueError):
+            RegimeSettings(**bad)

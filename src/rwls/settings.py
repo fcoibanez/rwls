@@ -54,6 +54,20 @@ class RegimeSettings:
         seed and the fit with the highest log-likelihood is kept.
     seed : int
         Seed of the first cold start. Start ``j`` uses ``seed + j``.
+    selection : {"best", "modal"}
+        How a model is chosen among several cold starts. ``"best"`` keeps the
+        fit with the highest likelihood. ``"modal"`` groups the fits that
+        reached the same optimum and keeps the best fit of the group reached
+        by the most starts.
+    modal_order_factor : int or str
+        Factor, by position or name, whose mean orders the regimes when fits
+        are compared for ``"modal"`` selection. The default is the first
+        column, conventionally the market.
+    modal_mean_tol, modal_transition_tol : float
+        Two fits reached the same optimum if every regime mean agrees within
+        ``modal_mean_tol`` and every transition probability within
+        ``modal_transition_tol``, with regimes ordered by
+        ``modal_order_factor``.
     transition_floor : float
         Lower bound applied to transition probabilities when a fit is used as the
         starting point of the next one, before the rows are renormalized.
@@ -71,6 +85,10 @@ class RegimeSettings:
     kmeans_restarts: int = 10
     n_starts: int = 10
     seed: int = 13
+    selection: Literal["best", "modal"] = "best"
+    modal_order_factor: int | str = 0
+    modal_mean_tol: float = 0.0025
+    modal_transition_tol: float = 0.05
     transition_floor: float = 1e-8
     forecast_floor: float = 1e-12
 
@@ -100,6 +118,16 @@ class RegimeSettings:
             "n_starts must be a positive integer",
         )
         _require(_is_int(self.seed), "seed must be an integer")
+        _require(
+            self.selection in ("best", "modal"), "selection must be 'best' or 'modal'"
+        )
+        _require(
+            isinstance(self.modal_order_factor, str)
+            or (_is_int(self.modal_order_factor) and self.modal_order_factor >= 0),
+            "modal_order_factor must be a factor name or a non-negative position",
+        )
+        _require(self.modal_mean_tol > 0, "modal_mean_tol must be positive")
+        _require(self.modal_transition_tol > 0, "modal_transition_tol must be positive")
         _require(0 <= self.transition_floor < 1, "transition_floor must be in [0, 1)")
         _require(0 <= self.forecast_floor < 1, "forecast_floor must be in [0, 1)")
 

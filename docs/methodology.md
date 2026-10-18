@@ -76,6 +76,13 @@ one. By default the model is therefore fitted from ten cold starts with
 consecutive seeds, and the fit with the highest likelihood is kept. Refits that
 start from an earlier fit (Section 1.3) use a single start.
 
+Alternatively, the model reached most often can be kept. Fits from different
+starts are grouped: with regimes ordered by their mean on one factor, two fits
+reached the same optimum if every regime mean agrees within 0.0025 and every
+transition probability within 0.05. The best fit of the largest group is kept.
+This is the model a researcher refitting from a random start is most likely to
+obtain, which need not be the one of highest likelihood.
+
 Iteration stops when the log-likelihood improves by less than a tolerance
 $\varepsilon$, or after 1,000 iterations. The default is $\varepsilon = 10^{-4}$.
 Looser tolerances can stop a warm-started refit before it reaches the optimum.
