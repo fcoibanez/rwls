@@ -7,6 +7,7 @@ with each observation weighted by its posterior regime probability.
 """
 
 from rwls.estimator import RWLS, AssetResults, RWLSResults, SparseRegimeWarning
+from rwls.expanding import Step, expanding
 from rwls.factors import load_factors
 from rwls.moments import RegimeMoments
 from rwls.regimes import RegimeFit, RegimeModel, RegimeSelection, select_regimes
@@ -25,6 +26,8 @@ __all__ = [
     "RegimeSettings",
     "RWLSSettings",
     "SparseRegimeWarning",
+    "Step",
+    "expanding",
     "load_factors",
     "select_regimes",
     "__version__",
