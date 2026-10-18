@@ -58,35 +58,98 @@ available in closed form.
 The full specification, including every estimation choice and default, is in
 [docs/methodology.md](docs/methodology.md).
 
-## Planned scope
+## Installation
 
-- Factor data: user-supplied factor returns, or a built-in loader for the Kenneth
-  R. French Data Library (CAPM, Fama-French three and five factors, with or
-  without momentum) that records the data vintage.
-- Regime identification: hidden Markov model fitting with warm-started refits,
-  posterior and forecast regime probabilities, alignment and sorting of regime
-  labels, and selection of the number of regimes by AIC, BIC, HQIC and ICL over
-  multiple starts.
-- Estimation: vectorized RWLS for large cross-sections, with posterior masses,
-  sandwich standard errors, t or normal p-values, confidence intervals, R-squared
-  and a Wald test of equal loadings across regimes.
-- Results in the style of a regression package: text summaries, HTML display in
-  notebooks, and conversion to data frames.
-- Moments: regime-conditional and mixture moments of asset returns, kept in
-  factor form for large universes.
-- Re-estimation through time: fits date by date on the data available at each
-  date, for out-of-sample work.
-- Settings: every constant of the estimators exposed as a documented default.
+```
+pip install rwls
+```
 
-Applications include conditional beta estimation, regime-dependent risk models
-and portfolio construction. These are left to the user: the package covers the
-estimator and the moments it implies.
+Python 3.10 or later. The dependencies are numpy, pandas, scipy, scikit-learn,
+joblib and hmmlearn.
+
+## Usage
+
+Factor returns can come from any source as a pandas DataFrame, or from the
+Kenneth R. French Data Library through the built-in loader. Models are `"capm"`,
+`"ff3"`, `"ff3+mom"`, `"ff5"` and `"ff5+mom"`; returns are monthly and in decimals.
+
+```python
+import rwls
+
+factors = rwls.load_factors("ff5+mom", start="1963-07", end="2024-12")
+X = factors.drop(columns="RF")
+excess = returns.sub(factors["RF"], axis=0)  # returns: monthly stock returns
+```
+
+French revises his factors when CRSP is updated. `factors.attrs` records the CRSP
+vintage and the download date, and `cache_dir=` keeps the downloaded files so
+that later runs use the same vintage.
+
+Fit the regime model, then renumber the regimes by a rule of your choice, since
+EM numbers them arbitrarily:
+
+```python
+regimes = rwls.RegimeModel(n_regimes=3).fit(X).sort_by("Mkt-RF")
+print(regimes.summary(periods_per_year=12))
+regimes.posteriors        # smoothed regime probabilities, one column per regime
+regimes.forecast()        # probabilities for the next period
+```
+
+Estimate the regime-specific factor models of every asset:
+
+```python
+res = rwls.RWLS(excess, X, regimes).fit()
+print(res["AAPL"].summary())    # regression table of one asset, by regime
+print(res.summary())            # loadings across assets, by regime
+
+res.params                      # coefficients: rows (regime, term), one column per asset
+res.bse, res.pvalues            # sandwich standard errors and p-values
+res.conf_int()
+res.rsquared                    # weighted R-squared by regime
+res.wald_equal_loadings()       # test that loadings are equal in every regime
+```
+
+Assets with missing returns are estimated on the periods they are observed.
+
+Regime-conditional and mixture moments of asset returns, in factor form:
+
+```python
+m = res.moments()
+m.mean(1), m.cov(1)                         # regime 1
+mean, cov = m.mixture(regimes.forecast())   # next period's mixture
+m.mixture_variance(weights, regimes.forecast())
+```
+
+Choose the number of regimes by information criteria over many starts:
+
+```python
+sel = rwls.select_regimes(X, n_regimes=range(1, 7), n_starts=100, n_jobs=-1)
+sel.table       # log-likelihood, AIC, BIC, HQIC, ICL, distinct optima
+sel.selected    # the number of regimes each criterion selects
+```
+
+Re-estimate through time on the data available at each date, with each regime
+fit starting from the previous one:
+
+```python
+for step in rwls.expanding(excess, X, start=600):
+    step.date, step.forecast, step.results.moments()
+```
+
+Every constant of the estimators is a setting with a documented default:
+
+```python
+rwls.RegimeSettings()   # number of regimes, starts, tolerance, variance prior, ...
+rwls.RWLSSettings()     # intercept, weighting, fallback, t or normal inference, ...
+rwls.RegimeModel(n_regimes=3, n_starts=1000, selection="modal")
+```
+
+With `selection="modal"`, the model kept is the one reached by the most starts
+rather than the one of highest likelihood.
 
 ## Status
 
-Under development. The settings, the factor loader and the regime model are in
-place; the estimator, results and moments are being added. Version 0.0.1 on PyPI
-only reserves the package name. The first usable release will be 0.1.0.
+The API may still change before version 1.0.
 
 ## License
 
