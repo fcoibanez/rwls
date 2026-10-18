@@ -116,21 +116,31 @@ every regime keeps a strictly positive probability and its logarithm is finite.
 
 ### 1.6 Regime labels
 
-EM numbers regimes arbitrarily, which matters only when results are reported.
+Regimes are labelled 1 to $M$. EM numbers them arbitrarily: which regime comes out
+as regime 1 depends on the starting values, so the same regime can carry
+different labels in two fits. Estimation never depends on the labels, since
+forecast probabilities and regime-conditional moments permute together. The
+labels matter only when results are compared or reported, and three conventions
+fix them.
 
-To compare a fitted model with a reference model, regimes are matched by
-minimizing the total Euclidean distance between their mean vectors (Hungarian
-algorithm), after dividing each factor by the standard deviation of the reference
-means across regimes. Estimation never uses this matching:
-forecast probabilities and regime-conditional moments permute together, so the
-labels do not affect them.
+A fit can be renumbered by hand, by giving the current labels in their new order.
 
-Regimes are named by their factor means. A regime whose momentum mean is below
-$-1\%$ per month while its market mean is positive is the Reversal regime. Of the
-remaining regimes, the one with the highest market mean is Bull and the one with
-the lowest negative market mean is Bear. With more regimes, any further
-positive-market regimes are Neutral and any further negative-market regimes Mild
-bear.
+A fit can be aligned to a reference model. Regimes are matched by minimizing the
+total Euclidean distance between their mean vectors (Hungarian algorithm), after
+dividing each factor by the standard deviation of the reference means across
+regimes, and take the labels of the regimes they are matched to.
+
+A fit can be sorted by the mean of one factor, so that regime 1 has the highest
+mean of that factor, or the lowest if sorted in ascending order. This gives a
+numbering that does not depend on the starting values. When two regimes have
+nearly the same mean on the chosen factor, alignment is the more reliable rule.
+
+Re-estimation through time needs none of these after the first date: each refit
+starts from the previous one and keeps its labels.
+
+Regimes are not given economic names. Whether a regime is better described as a
+bull market, a bear market or something else depends on the factors, the
+frequency and the sample, and is left to the user.
 
 ## 2. Regime-weighted least squares
 

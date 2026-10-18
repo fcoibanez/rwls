@@ -64,9 +64,9 @@ The full specification, including every estimation choice and default, is in
   R. French Data Library (CAPM, Fama-French three and five factors, with or
   without momentum) that records the data vintage.
 - Regime identification: hidden Markov model fitting with warm-started refits,
-  posterior and forecast regime probabilities, regime alignment and naming, and
-  selection of the number of regimes by AIC, BIC, HQIC and ICL over multiple
-  starts.
+  posterior and forecast regime probabilities, alignment and sorting of regime
+  labels, and selection of the number of regimes by AIC, BIC, HQIC and ICL over
+  multiple starts.
 - Estimation: vectorized RWLS for large cross-sections, with posterior masses,
   sandwich standard errors, t or normal p-values, confidence intervals, R-squared
   and a Wald test of equal loadings across regimes.
