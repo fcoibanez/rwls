@@ -69,7 +69,7 @@ class RegimeSettings:
     max_iter: int = 1000
     init_variance_floor: float = 1e-3
     kmeans_restarts: int = 10
-    n_starts: int = 1
+    n_starts: int = 10
     seed: int = 13
     transition_floor: float = 1e-8
     forecast_floor: float = 1e-12

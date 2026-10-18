@@ -14,7 +14,7 @@ def test_regime_defaults_match_the_methodology():
     assert s.max_iter == 1000
     assert s.init_variance_floor == 1e-3
     assert s.kmeans_restarts == 10
-    assert s.n_starts == 1
+    assert s.n_starts == 10
     assert s.seed == 13
     assert s.transition_floor == 1e-8
     assert s.forecast_floor == 1e-12

@@ -71,6 +71,11 @@ variances of every regime by the full-sample variances plus $10^{-3}$, and the
 rows of the transition matrix by draws from a Dirichlet distribution. All random
 draws use a fixed seed.
 
+The likelihood has many local maxima, and a single cold start can stop at a poor
+one. By default the model is therefore fitted from ten cold starts with
+consecutive seeds, and the fit with the highest likelihood is kept. Refits that
+start from an earlier fit (Section 1.3) use a single start.
+
 Iteration stops when the log-likelihood improves by less than a tolerance
 $\varepsilon$, or after 1,000 iterations. The default is $\varepsilon = 10^{-4}$.
 Looser tolerances can stop a warm-started refit before it reaches the optimum.

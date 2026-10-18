@@ -64,7 +64,7 @@ def _reference_warm(values, previous, tol):
 @pytest.mark.parametrize("tol", [0.1, 1e-4])
 def test_cold_start_reproduces_the_research_code(data, tol):
     X, _ = data
-    fit = RegimeModel(n_regimes=2, tol=tol).fit(X)
+    fit = RegimeModel(n_regimes=2, tol=tol, n_starts=1).fit(X)
     ref = _reference_cold(X.to_numpy(), 2, tol)
     np.testing.assert_allclose(fit.means.to_numpy(), ref.means_, rtol=0, atol=1e-12)
     np.testing.assert_allclose(
@@ -76,7 +76,7 @@ def test_cold_start_reproduces_the_research_code(data, tol):
 
 def test_warm_start_reproduces_the_research_code(data):
     X, _ = data
-    model = RegimeModel(n_regimes=2, tol=0.1)
+    model = RegimeModel(n_regimes=2, tol=0.1, n_starts=1)
     first = model.fit(X.iloc[:300])
     second = model.fit(X.iloc[:301], start_from=first)
     ref_first = _reference_cold(X.iloc[:300].to_numpy(), 2, 0.1)
