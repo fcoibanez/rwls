@@ -112,8 +112,7 @@ $$
 $$
 
 Each probability is floored at $10^{-12}$ and the vector is renormalized, so that
-the logarithm of every probability is finite in the portfolio objective of
-Section 5.
+every regime keeps a strictly positive probability and its logarithm is finite.
 
 ### 1.6 Regime labels
 
@@ -122,7 +121,7 @@ EM numbers regimes arbitrarily, which matters only when results are reported.
 To compare a fitted model with a reference model, regimes are matched by
 minimizing the total Euclidean distance between their mean vectors (Hungarian
 algorithm), after dividing each factor by the standard deviation of the reference
-means across regimes. Estimation and portfolio choice never use this matching:
+means across regimes. Estimation never uses this matching:
 forecast probabilities and regime-conditional moments permute together, so the
 labels do not affect them.
 
@@ -260,3 +259,69 @@ $$
 where $x_\tau = (1, f_\tau')'$ and $\hat\theta_{is} = (\hat\alpha_{is}, \hat\beta_{is}')'$.
 Estimates for different regimes are correlated because they use the same
 observations.
+
+## 3. Asset return moments
+
+### 3.1 Regime-conditional moments
+
+Stack the estimates of regime $s$ across assets: $\hat\alpha_s \in \mathbb{R}^N$
+holds the intercepts, the $N \times K$ matrix $\hat B_s$ has row $i$ equal to
+$\hat\beta_{is}'$, and $\hat D_s = \mathrm{diag}(\hat\sigma^2_{1s}, \dots, \hat\sigma^2_{Ns})$.
+Conditional on regime $s$, the factor model implies an asset mean vector and
+covariance matrix
+
+$$
+\hat\mu_s = \hat\alpha_s + \hat B_s \hat m_s, \qquad
+\hat\Sigma_s = \hat B_s \hat V_s \hat B_s' + \hat D_s,
+$$
+
+with $\hat m_s$ and $\hat V_s$ from Section 2.5. Without an intercept,
+$\hat\alpha_s = 0$. $\hat\Sigma_s$ is positive definite whenever every residual
+variance is positive. Computed covariance matrices are symmetrized,
+$\hat\Sigma_s \leftarrow (\hat\Sigma_s + \hat\Sigma_s')/2$, to remove rounding
+asymmetries.
+
+### 3.2 The predictive mixture
+
+Given the regime forecast $\hat\pi_{t+1}$ of Section 1.5, the distribution of next
+period's asset returns is the Gaussian mixture
+
+$$
+r_{t+1} \sim \sum_s \hat\pi_{t+1}(s) \mathcal{N}\big(\hat\mu_s, \hat\Sigma_s\big).
+$$
+
+Its mean and covariance are
+
+$$
+\bar\mu = \sum_s \hat\pi_{t+1}(s) \hat\mu_s, \qquad
+\bar\Sigma = \sum_s \hat\pi_{t+1}(s) \big(\hat\Sigma_s + \hat\mu_s \hat\mu_s'\big) - \bar\mu \bar\mu'.
+$$
+
+The second term of $\bar\Sigma$ adds the dispersion of the regime means to the
+average within-regime covariance. A single Gaussian with these two moments
+matches the mixture's mean and covariance but not its skewness or tails.
+
+### 3.3 Known regime parameters
+
+In simulation studies the parameters of the generating model may be supplied
+instead of estimated. The posterior probabilities and the regime forecast are
+then computed from the true $\pi_0$, $A$, $m_s$ and $V_s$ on the data available
+at $t$, and $\hat m_s$, $\hat V_s$ are replaced by $m_s$, $V_s$. The loadings and
+residual variances are still estimated by Section 2, with the posterior
+probabilities of the true model as weights. Comparing this variant with full
+estimation separates the error from identifying regimes from the error in
+everything else.
+
+### 3.4 Factor form
+
+The $N \times N$ matrices of Section 3.1 never need to be formed explicitly. Each
+regime is fully described by $(\hat\alpha_s, \hat B_s, \hat m_s, \hat V_s, \hat D_s)$,
+which takes $O(NK)$ memory instead of $O(N^2)$. Quadratic forms can be computed
+from that representation directly. For a vector of weights $w$,
+
+$$
+w' \hat\Sigma_s w = (\hat B_s' w)' \hat V_s (\hat B_s' w) + \sum_i w_i^2 \hat\sigma^2_{is}.
+$$
+
+The package keeps the factor form and builds dense matrices only when they are
+asked for.
