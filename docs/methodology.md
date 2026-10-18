@@ -15,15 +15,15 @@ method and still need a decision.
 | $t = 1, \dots, T$ | time periods (months in the reference application) |
 | $f_t \in \mathbb{R}^K$ | returns of the $K$ common factors in period $t$ |
 | $r_{it}$ | excess return of asset $i = 1, \dots, N$ in period $t$ |
-| $S_t \in \{1, \dots, M\}$ | latent regime in period $t$ |
+| $S_t \in \lbrace 1, \dots, M \rbrace$ | latent regime in period $t$ |
 | $A = (a_{sr})$ | regime transition matrix, $a_{sr} = P(S_{t+1} = r \mid S_t = s)$ |
-| $m_s, \; V_s$ | factor mean vector and covariance matrix in regime $s$ |
+| $m_s,   V_s$ | factor mean vector and covariance matrix in regime $s$ |
 | $\gamma_t(s)$ | posterior probability of regime $s$ in period $t$ |
-| $\alpha_{is}, \; \beta_{is}$ | intercept and factor loadings of asset $i$ in regime $s$ |
+| $\alpha_{is},   \beta_{is}$ | intercept and factor loadings of asset $i$ in regime $s$ |
 | $\sigma^2_{is}$ | residual variance of asset $i$ in regime $s$ |
 | $k = K + 1$ | coefficients per regression (intercept plus loadings) |
 
-Vectors are columns. $\operatorname{diag}(v)$ is the diagonal matrix with $v$ on
+Vectors are columns. $\mathrm{diag}(v)$ is the diagonal matrix with $v$ on
 the diagonal.
 
 ## 1. Regime identification
@@ -35,7 +35,7 @@ initial distribution $\pi_0$. Conditional on the regime, factor returns are
 Gaussian with a diagonal covariance matrix:
 
 $$
-f_t \mid S_t = s \;\sim\; \mathcal{N}\big(m_s,\; V_s\big), \qquad V_s = \operatorname{diag}(v_{s1}, \dots, v_{sK}).
+f_t \mid S_t = s  \sim  \mathcal{N}\big(m_s,  V_s\big), \qquad V_s = \mathrm{diag}(v_{s1}, \dots, v_{sK}).
 $$
 
 Factors are therefore uncorrelated within a regime. They are not unconditionally
@@ -53,11 +53,11 @@ onto whichever regime the sample starts in.
 The transition matrix is updated by the usual EM step,
 $a_{sr} \propto \sum_t \xi_t(s, r)$, where $\xi_t(s, r)$ is the posterior
 probability of a transition from $s$ to $r$ between $t$ and $t + 1$. The means
-are $m_s = \sum_t \gamma_t(s) f_t \,/\, \sum_t \gamma_t(s)$, and the variances
+are $m_s = \sum_t \gamma_t(s) f_t  /  \sum_t \gamma_t(s)$, and the variances
 include a prior $c_0$:
 
 $$
-v_{sj} = \frac{c_0 + \sum_t \gamma_t(s)\,(f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)}.
+v_{sj} = \frac{c_0 + \sum_t \gamma_t(s) (f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)}.
 $$
 
 The reference implementation uses $c_0 = 0.01$ (see R1.1).
@@ -104,7 +104,7 @@ The one-step-ahead regime distribution is the filtered distribution propagated
 through the transition matrix:
 
 $$
-\hat\pi_{t+1}(r) = \sum_s \gamma_t(s)\, a_{sr}.
+\hat\pi_{t+1}(r) = \sum_s \gamma_t(s)  a_{sr}.
 $$
 
 Each probability is floored at $10^{-12}$ and the vector is renormalized, so that
