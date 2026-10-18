@@ -5,9 +5,6 @@ estimators, and the conventions the implementation follows where the model leave
 a choice open. The code and the tests follow this document, so any change to one
 should be reflected in the other.
 
-Each section closes with review notes on choices that are not dictated by the
-method and still need a decision.
-
 ## Notation
 
 | Symbol | Meaning |
@@ -22,6 +19,8 @@ method and still need a decision.
 | $\alpha_{is},   \beta_{is}$ | intercept and factor loadings of asset $i$ in regime $s$ |
 | $\sigma^2_{is}$ | residual variance of asset $i$ in regime $s$ |
 | $k = K + 1$ | coefficients per regression (intercept plus loadings) |
+| $n_s$ | posterior mass of regime $s$, its expected number of observations |
+| $L$ | window length for hard classification and for the sparse-regime fallback |
 
 Vectors are columns. $\mathrm{diag}(v)$ is the diagonal matrix with $v$ on
 the diagonal.
@@ -60,7 +59,7 @@ $$
 v_{sj} = \frac{c_0 + \sum_t \gamma_t(s) (f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)}.
 $$
 
-The reference implementation uses $c_0 = 0.01$ (see R1.1).
+The reference implementation uses $c_0 = 0.01$.
 
 From a cold start, the means are initialized by $k$-means with ten restarts, the
 variances of every regime by the full-sample variances plus $10^{-3}$, and the
@@ -69,7 +68,7 @@ draws use a fixed seed.
 
 Iteration stops when the log-likelihood improves by less than a tolerance
 $\varepsilon$, or after 1,000 iterations. The reference implementation uses
-$\varepsilon = 0.1$ (see R1.2).
+$\varepsilon = 0.1$.
 
 ### 1.3 Re-estimation through time
 
@@ -129,25 +128,118 @@ the lowest negative market mean is Bear. With more regimes, any further
 positive-market regimes are Neutral and any further negative-market regimes Mild
 bear.
 
-### Review notes
+## 2. Regime-weighted least squares
 
-R1.1, variance prior. $c_0 = 0.01$ is the default of the HMM library rather than
-a modelling choice, and the paper does not mention it. It adds
-$0.01 / \sum_t \gamma_t(s)$ to every factor variance in regime $s$. For a regime
-with 60 effective months that is about $1.7 \times 10^{-4}$, a sizeable fraction
-of monthly factor variances, which are of order $10^{-4}$ to $10^{-3}$. Either
-set $c_0 = 0$ for pure maximum likelihood, or keep it and document it as a
-regularizing prior.
+### 2.1 Observation weights
 
-R1.2, convergence tolerance. $\varepsilon = 0.1$ on the log-likelihood is ten
-times the library default. Its effect on the warm-started refits should be
-measured before it is fixed.
+At decision date $t$, each regime $s$ receives a weight for every observation
+$\tau = 1, \dots, t$. Regime-weighted least squares uses the posterior
+probabilities of Section 1.4:
 
-R1.3, `min_covar`. The library's `min_covar` ($10^{-3}$ here) enters only the
-cold-start initialization. It is not a floor on the estimated variances, as the
-name might suggest.
+$$
+w^{s}_\tau = \gamma_\tau(s).
+$$
 
-R1.4, diagonal covariances. The diagonal restriction on $V_s$ is a modelling
-choice the paper already lists as a limitation. The package should offer a full
-covariance as an option and keep the diagonal one as the default, for
-comparability with the paper.
+Every observation enters every regime's regression, in proportion to the
+probability that it belongs to that regime. The total weight of regime $s$,
+
+$$
+n_s = \sum_{\tau=1}^{t} \gamma_\tau(s),
+$$
+
+is its posterior mass, the number of observations the regime accounts for in
+expectation.
+
+The package also provides hard classification, which is the rule of Costa and
+Kwon (2020) and serves as a benchmark. Each observation is assigned to its most
+probable regime, $\hat S_\tau = \arg\max_s \gamma_\tau(s)$, and regime $s$ keeps
+only the most recent $L$ observations assigned to it:
+
+$$
+w^{s}_\tau = 1 \text{ if } \hat S_\tau = s \text{ and } \tau \text{ is among the last } L \text{ such periods}, \qquad w^{s}_\tau = 0 \text{ otherwise}.
+$$
+
+The reference implementation uses $L = 24$. With two regimes, the most probable
+regime is the one with probability above one half, as in Costa and Kwon.
+
+### 2.2 Loadings
+
+Let $X$ be the $t \times k$ design matrix whose row $\tau$ is $(1, f_\tau')$, let
+$R$ be the $t \times N$ matrix of asset excess returns, and let
+$W_s = \mathrm{diag}(w^{s}_1, \dots, w^{s}_t)$. For each regime, the
+intercepts and loadings of all assets solve the weighted normal equations
+
+$$
+\hat\Theta_s = \big(X' W_s X\big)^{-1} X' W_s R,
+$$
+
+where column $i$ of the $k \times N$ matrix $\hat\Theta_s$ is
+$(\hat\alpha_{is}, \hat\beta_{is}')'$. Every asset shares the same design matrix
+and weights, so $X' W_s X$ is formed and factorized once per regime, whatever the
+number of assets. This is what makes the estimator practical for large
+cross-sections.
+
+Solving for all assets at once requires them to be observed over the same
+window. An asset with a shorter history needs its own design matrix and weights,
+restricted to the periods it is observed.
+
+### 2.3 Residual variances
+
+With residuals $e_{i\tau s} = r_{i\tau} - \hat\alpha_{is} - \hat\beta_{is}' f_\tau$,
+the residual variance of asset $i$ in regime $s$ is measured on the regime's
+posterior mass:
+
+$$
+\hat\sigma^2_{is} = \frac{\sum_\tau w^{s}_\tau   e^2_{i\tau s}}{\max(n_s - k, 1)}.
+$$
+
+The denominator is the regime's degrees of freedom. Dividing by $t - k$ instead,
+as standard regression software does for weighted least squares, understates the
+variance of a regime by roughly the regime's share of the sample. The floor of one
+prevents a negative or infinite variance when the posterior mass is close to the
+number of coefficients, a case that Section 2.4 normally removes first.
+
+### 2.4 Sparse regimes
+
+A regime with too little posterior mass does not identify its regression. If
+
+$$
+n_s \le k + 1,
+$$
+
+its weights are replaced by equal weights on the most recent $L$ observations,
+$w^{s}_\tau = 1$ for $\tau > t - L$ and zero otherwise, and the loadings,
+residual variances and factor moments of that regime are computed from those
+weights.
+
+### 2.5 Regime-conditional factor moments
+
+The factor mean and covariance of each regime are computed from the same weights
+as its regressions:
+
+$$
+\hat m_s = \frac{\sum_\tau w^{s}_\tau f_\tau}{\sum_\tau w^{s}_\tau}, \qquad
+\hat V_s = \mathrm{diag}\left( \frac{\sum_\tau w^{s}_\tau (f_\tau - \hat m_s)(f_\tau - \hat m_s)'}{\sum_\tau w^{s}_\tau} \right).
+$$
+
+With posterior weights these are the maximum-likelihood updates of Section 1.2
+without the variance prior. With hard-classification weights they are the sample
+moments of the classified window. When the parameters of the generating model
+are known, as in a simulation, $m_s$ and $V_s$ can be used instead.
+
+### 2.6 Sampling covariance of the loadings
+
+Posterior probabilities are not inverse variances, so the usual weighted
+least-squares standard errors do not apply. For asset $i$, the covariance of the
+coefficient estimates of regimes $s$ and $r$ is estimated by the sandwich formula
+
+$$
+\widehat{\mathrm{Cov}}\big(\hat\theta_{is}, \hat\theta_{ir}\big)
+= \big(X' W_s X\big)^{-1}
+\left( \sum_\tau x_\tau x_\tau'   w^{s}_\tau w^{r}_\tau   e_{i\tau s} e_{i\tau r} \right)
+\big(X' W_r X\big)^{-1},
+$$
+
+where $x_\tau = (1, f_\tau')'$ and $\hat\theta_{is} = (\hat\alpha_{is}, \hat\beta_{is}')'$.
+Estimates for different regimes are correlated because they use the same
+observations.
