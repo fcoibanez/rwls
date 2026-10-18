@@ -387,3 +387,75 @@ def test_inference_with_missing_returns(setup):
     alone = RWLS(gappy.iloc[100:, [0]], factors, regimes).fit()
     np.testing.assert_allclose(res.cov_params("A0"), alone.cov_params("A0"), rtol=1e-10)
     np.testing.assert_allclose(res.rsquared["A0"], alone.rsquared["A0"])
+
+
+# -------------------------------------------------------------------- summary
+
+
+def _flat(summary):
+    return " ".join(str(summary).split())
+
+
+def test_asset_summary(setup):
+    returns, factors, regimes, _, _ = setup
+    res = RWLS(returns, factors, regimes).fit()
+    s = res["A0"].summary(periods_per_year=12)
+    text = str(s)
+    assert text.splitlines()[0].strip() == "Regime-Weighted Least Squares Results"
+    assert all(len(line) <= 78 for line in text.splitlines())
+    stats_table, block1, block2 = s.tables
+    np.testing.assert_allclose(stats_table["Mass"], res.mass["A0"])
+    np.testing.assert_allclose(stats_table["R-squared"], res.rsquared["A0"])
+    np.testing.assert_allclose(
+        stats_table["Resid. vol"], np.sqrt(12 * res.resid_var["A0"])
+    )
+    np.testing.assert_allclose(block2["coef"], res.params["A0"].loc[2])
+    np.testing.assert_allclose(block2["P>|t|"], res.pvalues["A0"].loc[2])
+    assert list(block1.columns) == ["coef", "std err", "t", "P>|t|", "[0.025", "0.975]"]
+    assert block1.index.name == "Regime 1"
+    assert "F (equal loadings)" in _flat(s)
+    assert "<table" in s._repr_html_()
+
+
+def test_asset_summary_under_the_normal(setup):
+    returns, factors, regimes, _, _ = setup
+    s = RWLS(returns, factors, regimes, use_t=False).fit()["A0"].summary(alpha=0.1)
+    assert list(s.tables[1].columns) == [
+        "coef",
+        "std err",
+        "z",
+        "P>|z|",
+        "[0.05",
+        "0.95]",
+    ]
+    assert "Chi2 (equal loadings)" in _flat(s)
+    assert "standard normal" in _flat(s)
+
+
+def test_cross_section_summary(setup):
+    returns, factors, regimes, _, _ = setup
+    res = RWLS(returns, factors, regimes).fit()
+    s = res.summary()
+    loads, fit = s.tables
+    assert len(loads) == 4
+    np.testing.assert_allclose(loads["Median"], res.loadings.median(axis=1))
+    np.testing.assert_allclose(fit["R-squared"], res.rsquared.median(axis=1))
+    np.testing.assert_allclose(fit["Mass"], res.mass.median(axis=1))
+    assert np.isfinite(fit.to_numpy()).all()
+    assert "Resid" in str(s) and "per period" in _flat(s)
+    assert all(len(line) <= 78 for line in str(s).splitlines())
+
+
+def test_summary_mentions_a_fallback(setup):
+    returns, factors, regimes, _, _ = setup
+    with pytest.warns(SparseRegimeWarning):
+        res = RWLS(returns, factors, regimes, min_mass=10_000).fit()
+    assert "Fallback: the regime's posterior mass was too small" in _flat(res.summary())
+    assert "yes" in str(res["A0"].summary())
+
+
+def test_wald_is_missing_when_regimes_cannot_be_compared(setup):
+    returns, factors, regimes, _, _ = setup
+    with pytest.warns(SparseRegimeWarning):
+        res = RWLS(returns, factors, regimes, min_mass=10_000).fit()
+    assert res.wald_equal_loadings()["pvalue"].isna().all()

@@ -15,8 +15,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from rwls.regimes import RegimeFit
+from rwls.regimes import RegimeFit, _period
 from rwls.settings import RWLSSettings
+from rwls.summary import Summary
 
 __all__ = ["RWLS", "RWLSResults", "AssetResults", "SparseRegimeWarning"]
 
@@ -404,6 +405,13 @@ class RWLSResults:
             if not np.all(np.isfinite(d)) or not np.all(np.isfinite(V)):
                 rows[asset] = (np.nan, q, np.nan, np.nan)
                 continue
+            # Regimes estimated from identical weights, as after a pooled
+            # fallback in every regime, cannot be compared: the covariance of
+            # their differences is singular, up to rounding error.
+            eig = np.linalg.eigvalsh((V + V.T) / 2)
+            if eig.max() <= 0 or eig.min() <= 1e-10 * eig.max():
+                rows[asset] = (np.nan, q, np.nan, np.nan)
+                continue
             w = float(d @ np.linalg.solve(V, d))
             if self.settings.use_t:
                 df2 = max(float(self.nobs[asset]) - M * k, 1.0)
@@ -413,6 +421,73 @@ class RWLSResults:
         return pd.DataFrame.from_dict(
             rows, orient="index", columns=["statistic", "df_num", "df_denom", "pvalue"]
         )
+
+    # ---------------------------------------------------------------------- summary
+
+    def summary(self, periods_per_year: int | None = None) -> Summary:
+        """Summary across assets: the distribution of loadings by regime.
+
+        Parameters
+        ----------
+        periods_per_year : int, optional
+            If given, residual volatilities are annualized.
+
+        Returns
+        -------
+        Summary
+            Printing it gives the text layout; in a notebook it renders as HTML.
+        """
+        s = self.settings
+        wald = self.wald_equal_loadings()["pvalue"]
+        out = Summary("Regime-Weighted Least Squares Results")
+        out.add_header(
+            _common_header(self, "No. assets:", len(self.asset_names)),
+            [
+                ("Intercept:", "yes" if s.intercept else "no"),
+                ("Std. errors:", "sandwich"),
+                ("Inference:", "t" if s.use_t else "normal"),
+                ("Assets with a fallback:", int(self.fallback.any().sum())),
+                ("Loadings differ (5%):", f"{(wald < 0.05).mean():.1%}"),
+            ],
+        )
+
+        loadings = self.loadings
+        signif = self.pvalues.loc[loadings.index] < 0.05
+        values = loadings.to_numpy()
+        table = pd.DataFrame(
+            {
+                "Mean": np.nanmean(values, axis=1),
+                "Std": np.nanstd(values, axis=1, ddof=1)
+                if values.shape[1] > 1
+                else np.nan,
+                "10%": np.nanpercentile(values, 10, axis=1),
+                "Median": np.nanmedian(values, axis=1),
+                "90%": np.nanpercentile(values, 90, axis=1),
+                "Signif. 5%": signif.mean(axis=1).to_numpy(),
+            },
+            index=pd.Index([f"Regime {r}  {f}" for r, f in loadings.index], name=""),
+        )
+        out.add_table(
+            table, title="Loadings across assets", formats={"Signif. 5%": "{:.1%}"}
+        )
+
+        vol = np.sqrt(self.resid_var * (periods_per_year or 1))
+        fit = pd.DataFrame(
+            {
+                "Mass": self.mass.median(axis=1).to_numpy(),
+                "R-squared": self.rsquared.median(axis=1).to_numpy(),
+                "Resid. vol": vol.median(axis=1).to_numpy(),
+                "Fallback": self.fallback.mean(axis=1).to_numpy(),
+            },
+            index=pd.Index([f"Regime {r}" for r in self.regime_labels], name=""),
+        )
+        out.add_table(
+            fit,
+            title="Regime fit across assets (medians)",
+            formats={"Mass": "{:.1f}", "Fallback": "{:.1%}"},
+        )
+        out.add_notes(_notes(self, periods_per_year, single=False))
+        return out
 
     def __getitem__(self, asset) -> AssetResults:
         if asset not in self.asset_names:
@@ -471,6 +546,110 @@ class AssetResults:
 
     def wald_equal_loadings(self) -> pd.Series:
         return self.parent.wald_equal_loadings().loc[self.asset]
+
+    def summary(self, periods_per_year: int | None = None, alpha: float = 0.05):
+        """Regression table of the asset, one coefficient block per regime.
+
+        Parameters
+        ----------
+        periods_per_year : int, optional
+            If given, residual volatilities are annualized.
+        alpha : float
+            Confidence intervals are at level ``1 - alpha``.
+        """
+        res, a = self.parent, self.asset
+        s = res.settings
+        wald = self.wald_equal_loadings()
+        out = Summary("Regime-Weighted Least Squares Results")
+        wald_label = "F (equal loadings):" if s.use_t else "Chi2 (equal loadings):"
+        out.add_header(
+            _common_header(res, "Dep. variable:", str(a), nobs=self.nobs),
+            [
+                ("Intercept:", "yes" if s.intercept else "no"),
+                ("Std. errors:", "sandwich"),
+                ("Inference:", "t" if s.use_t else "normal"),
+                (wald_label, wald["statistic"]),
+                ("Prob (equal loadings):", wald["pvalue"]),
+            ],
+        )
+
+        labels = [f"Regime {r}" for r in res.regime_labels]
+        vol = np.sqrt(self.resid_var * (periods_per_year or 1))
+        stats_table = pd.DataFrame(
+            {
+                "Mass": self.mass.to_numpy(),
+                "df resid": res.df_resid[a].to_numpy(),
+                "R-squared": self.rsquared.to_numpy(),
+                "Resid. vol": vol.to_numpy(),
+                "Fallback": ["yes" if f else "no" for f in res.fallback[a]],
+            },
+            index=pd.Index(labels, name=""),
+        )
+        out.add_table(
+            stats_table,
+            title="Regime statistics",
+            formats={"Mass": "{:.1f}", "df resid": "{:.1f}"},
+        )
+
+        stat = "t" if s.use_t else "z"
+        ci = self.conf_int(alpha)
+        lo, hi = f"[{alpha / 2:g}", f"{1 - alpha / 2:g}]"
+        for r, label in zip(res.regime_labels, labels, strict=True):
+            block = pd.DataFrame(
+                {
+                    "coef": self.params.loc[r],
+                    "std err": self.bse.loc[r],
+                    stat: self.tvalues.loc[r],
+                    f"P>|{stat}|": self.pvalues.loc[r],
+                    lo: ci["lower"].loc[r],
+                    hi: ci["upper"].loc[r],
+                }
+            )
+            block.index.name = label
+            out.add_table(block, formats={stat: "{:.3f}", f"P>|{stat}|": "{:.3f}"})
+        out.add_notes(_notes(res, periods_per_year, single=True))
+        return out
+
+
+def _common_header(res, first_label, first_value, nobs=None):
+    start, end = _period(res.index[0]), _period(res.index[-1])
+    rows = [(first_label, first_value)]
+    rows.append(("No. observations:", len(res.index) if nobs is None else nobs))
+    rows += [
+        ("Sample:", start),
+        ("", f"- {end}"),
+        ("No. regimes:", res.n_regimes),
+        ("No. factors:", len(res.factor_names)),
+        ("Weighting:", res.settings.weighting),
+    ]
+    return rows
+
+
+def _notes(res, periods_per_year, single: bool) -> list[str]:
+    s = res.settings
+    k = len(res.terms)
+    if s.use_t:
+        inference = (
+            "p-values and intervals use Student's t with n_s - k degrees of freedom, "
+            f"where n_s is the regime's posterior mass and k = {k}."
+        )
+    else:
+        inference = "p-values and intervals use the standard normal distribution."
+    notes = [
+        "Standard errors are sandwich estimates, robust to heteroskedasticity, and "
+        "allow for correlation between the estimates of different regimes.",
+        inference,
+        "The equal-loadings test is a Wald test that every factor loading is the "
+        "same in all regimes; intercepts are not restricted.",
+        "Residual volatility is "
+        + ("annualized." if periods_per_year else "per period."),
+    ]
+    if res.fallback.to_numpy().any():
+        notes.append(
+            "Fallback: the regime's posterior mass was too small to identify its "
+            f"regression, and '{s.resolved_fallback()}' weights were used instead."
+        )
+    return notes
 
 
 # ----------------------------------------------------------------------- weights
