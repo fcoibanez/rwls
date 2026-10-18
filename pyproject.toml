@@ -43,6 +43,7 @@ packages = ["src/rwls"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "network: downloads data from the internet (deselect with -m 'not network')",

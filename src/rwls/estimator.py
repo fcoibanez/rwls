@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from rwls.moments import RegimeMoments
 from rwls.regimes import RegimeFit, _period
 from rwls.settings import RWLSSettings
 from rwls.summary import Summary
@@ -420,6 +421,69 @@ class RWLSResults:
                 rows[asset] = (w, q, np.nan, float(stats.chi2.sf(w, q)))
         return pd.DataFrame.from_dict(
             rows, orient="index", columns=["statistic", "df_num", "df_denom", "pvalue"]
+        )
+
+    # ---------------------------------------------------------------------- moments
+
+    def moments(
+        self,
+        factor_moments: str = "weighted",
+        factor_means=None,
+        factor_covariances=None,
+    ) -> RegimeMoments:
+        """Regime-conditional moments of asset returns, in factor form (Section 3).
+
+        Parameters
+        ----------
+        factor_moments : {"weighted", "regime_model"}
+            Source of the factor means and covariances. ``"weighted"`` uses the
+            moments computed with the RWLS weights (Section 2.5); ``"regime_model"``
+            uses those of the fitted regime model, which requires the fit to have
+            been given a :class:`RegimeFit`.
+        factor_means, factor_covariances : array-like, optional
+            Factor moments to use instead, for example those of a known generating
+            model (Section 3.3): means of shape ``(M, K)`` and covariances of shape
+            ``(M, K, K)``, in regime order. Both must be given together.
+
+        Returns
+        -------
+        RegimeMoments
+        """
+        if (factor_means is None) != (factor_covariances is None):
+            raise ValueError(
+                "give both factor_means and factor_covariances, or neither"
+            )
+        if factor_means is not None:
+            fm = np.asarray(factor_means, dtype=float)
+            fc = np.asarray(factor_covariances, dtype=float)
+        elif factor_moments == "weighted":
+            fm, fc = self.factor_means.to_numpy(), self.factor_covariances
+        elif factor_moments == "regime_model":
+            regimes = self._model.regimes
+            if regimes is None:
+                raise ValueError(
+                    "'regime_model' needs the fit to have been given a RegimeFit"
+                )
+            fm = regimes.means[self.factor_names].to_numpy()
+            fc = regimes.covariances
+        else:
+            raise ValueError("factor_moments must be 'weighted' or 'regime_model'")
+
+        M, N, K = self.n_regimes, len(self.asset_names), len(self.factor_names)
+        if self.settings.intercept:
+            alphas = self.intercepts.to_numpy()
+        else:
+            alphas = np.zeros((M, N))
+        loadings = self.loadings.to_numpy().reshape(M, K, N).transpose(0, 2, 1)
+        return RegimeMoments(
+            regime_labels=list(self.regime_labels),
+            asset_names=list(self.asset_names),
+            factor_names=list(self.factor_names),
+            alphas=alphas,
+            loadings=loadings,
+            factor_means=fm,
+            factor_covariances=fc,
+            resid_var=self.resid_var.to_numpy(),
         )
 
     # ---------------------------------------------------------------------- summary
