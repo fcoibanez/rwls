@@ -67,7 +67,7 @@ def _simulate(n=360, n_assets=12, seed=1):
         [rng.normal(1.0, 0.3, (n_assets, 2)), rng.normal(1.3, 0.3, (n_assets, 2))]
     )
     R = np.einsum("tk,tnk->tn", X, beta[Z]) + rng.normal(0, 0.03, (n, n_assets))
-    dates = pd.date_range("1990-01-31", periods=n, freq="ME")
+    dates = pd.date_range("1990-01-31", periods=n, freq=pd.offsets.MonthEnd())
     factors = pd.DataFrame(X, index=dates, columns=["Mkt-RF", "SMB"])
     returns = pd.DataFrame(R, index=dates, columns=[f"A{i}" for i in range(n_assets)])
     return returns, factors, Z, beta

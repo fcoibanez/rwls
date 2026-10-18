@@ -15,7 +15,7 @@ def _simulate(n=400, seed=0):
     gen.means_ = np.array([[0.01, 0.00], [-0.03, 0.02]])
     gen.covars_ = np.array([[0.0010, 0.0005], [0.0040, 0.0020]])
     X, Z = gen.sample(n)
-    dates = pd.date_range("1990-01-31", periods=n, freq="ME")
+    dates = pd.date_range("1990-01-31", periods=n, freq=pd.offsets.MonthEnd())
     return pd.DataFrame(X, index=dates, columns=["Mkt-RF", "SMB"]), Z
 
 
@@ -25,7 +25,16 @@ def data():
 
 
 def _reference_cold(values, n_states, tol, seed=13):
-    """The cold start of the research code (regimeaware.core.estimation.build_hmm)."""
+    """The cold start of the research code (regimeaware.core.estimation.build_hmm).
+
+    The research code left the starting means to hmmlearn, which runs k-means with
+    ten restarts from version 0.3.3 and with one before. The paper's results were
+    produced with 0.3.3, so the reference fixes the ten restarts explicitly and does
+    not depend on the installed version. The starting transition matrix and
+    variances are still hmmlearn's own, drawn the same way in every 0.3 release.
+    """
+    from sklearn.cluster import KMeans
+
     mdl = GaussianHMM(
         n_components=n_states,
         covariance_type="diag",
@@ -34,10 +43,15 @@ def _reference_cold(values, n_states, tol, seed=13):
         tol=tol,
         implementation="scaling",
         random_state=seed,
-        init_params="tmc",
+        init_params="tc",
         params="tmc",
     )
     mdl.startprob_ = np.full(n_states, 1 / n_states)
+    mdl.means_ = (
+        KMeans(n_clusters=n_states, random_state=seed, n_init=10)
+        .fit(values)
+        .cluster_centers_
+    )
     return mdl.fit(values)
 
 
