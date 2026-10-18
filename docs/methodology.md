@@ -18,7 +18,7 @@ should be reflected in the other.
 | $\gamma_t(s)$ | posterior probability of regime $s$ in period $t$ |
 | $\alpha_{is},   \beta_{is}$ | intercept and factor loadings of asset $i$ in regime $s$ |
 | $\sigma^2_{is}$ | residual variance of asset $i$ in regime $s$ |
-| $k = K + 1$ | coefficients per regression (intercept plus loadings) |
+| $k$ | coefficients per regression, $K + 1$ with an intercept |
 | $n_s$ | posterior mass of regime $s$, its expected number of observations |
 | $L$ | window length for hard classification and for the sparse-regime fallback |
 
@@ -38,7 +38,8 @@ f_t \mid S_t = s  \sim  \mathcal{N}\big(m_s,  V_s\big), \qquad V_s = \mathrm{dia
 $$
 
 Factors are therefore uncorrelated within a regime. They are not unconditionally
-uncorrelated, since a change of regime moves all factor means together.
+uncorrelated, since a change of regime moves all factor means together. A full
+covariance matrix is available as an option; the diagonal form is the default.
 
 ### 1.2 Estimation
 
@@ -59,7 +60,11 @@ $$
 v_{sj} = \frac{c_0 + \sum_t \gamma_t(s) (f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)}.
 $$
 
-The reference implementation uses $c_0 = 0.01$.
+The prior keeps the variances of a regime with little posterior mass away from
+zero, which stops the regime from collapsing onto a handful of observations. The
+default is $c_0 = 0.01$, and $c_0 = 0$ gives the maximum-likelihood estimates. In
+simulations calibrated to US factor returns, the prior improves the
+classification of the true regimes by several percentage points.
 
 From a cold start, the means are initialized by $k$-means with ten restarts, the
 variances of every regime by the full-sample variances plus $10^{-3}$, and the
@@ -67,8 +72,8 @@ rows of the transition matrix by draws from a Dirichlet distribution. All random
 draws use a fixed seed.
 
 Iteration stops when the log-likelihood improves by less than a tolerance
-$\varepsilon$, or after 1,000 iterations. The reference implementation uses
-$\varepsilon = 0.1$.
+$\varepsilon$, or after 1,000 iterations. The default is $\varepsilon = 10^{-4}$.
+Looser tolerances can stop a warm-started refit before it reaches the optimum.
 
 ### 1.3 Re-estimation through time
 
@@ -179,6 +184,9 @@ and weights, so $X' W_s X$ is formed and factorized once per regime, whatever th
 number of assets. This is what makes the estimator practical for large
 cross-sections.
 
+The intercept can be omitted, in which case row $\tau$ of $X$ is $f_\tau'$ and
+$k = K$. It is included by default.
+
 Solving for all assets at once requires them to be observed over the same
 window. An asset with a shorter history needs its own design matrix and weights,
 restricted to the periods it is observed.
@@ -193,7 +201,10 @@ $$
 \hat\sigma^2_{is} = \frac{\sum_\tau w^{s}_\tau   e^2_{i\tau s}}{\max(n_s - k, 1)}.
 $$
 
-The denominator is the regime's degrees of freedom. Dividing by $t - k$ instead,
+The denominator is the regime's degrees of freedom, treating the posterior mass
+as a number of observations. The factor variances of Section 2.5 divide by the
+posterior mass itself, as the maximum-likelihood estimates do. Dividing by
+$t - k$ instead,
 as standard regression software does for weighted least squares, understates the
 variance of a regime by roughly the regime's share of the sample. The floor of one
 prevents a negative or infinite variance when the posterior mass is close to the
@@ -207,10 +218,16 @@ $$
 n_s \le k + 1,
 $$
 
-its weights are replaced by equal weights on the most recent $L$ observations,
-$w^{s}_\tau = 1$ for $\tau > t - L$ and zero otherwise, and the loadings,
-residual variances and factor moments of that regime are computed from those
-weights.
+its weights are replaced by equal weights on every observation, $w^{s}_\tau = 1$,
+and a warning is issued. The regime then takes the loadings, residual variances
+and factor moments of a model without regimes, estimated on the same window.
+This is a safeguard for short samples. With several hundred observations, as in
+the reference application, the posterior mass of every regime stays well above
+the threshold.
+
+Under hard classification, where $n_s$ is the number of classified observations
+in the window, a regime that fails the same test instead takes equal weights on
+the most recent $L$ observations, whichever regime they belong to.
 
 ### 2.5 Regime-conditional factor moments
 
