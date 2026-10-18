@@ -282,6 +282,44 @@ where $x_\tau = (1, f_\tau')'$ and $\hat\theta_{is} = (\hat\alpha_{is}, \hat\bet
 Estimates for different regimes are correlated because they use the same
 observations.
 
+### 2.7 Inference
+
+Each coefficient's $t$-statistic is its estimate divided by its sandwich standard
+error. By default, p-values and confidence intervals use Student's $t$
+distribution with $\max(n_s - k, 1)$ degrees of freedom, the same degrees of
+freedom as the residual variance of Section 2.3. The sandwich estimator is
+justified asymptotically, so the $t$ distribution is a convention that makes
+inference more conservative in regimes with little posterior mass. The standard
+normal distribution can be used instead. With several hundred observations per
+regime the two give practically the same results.
+
+The fit of each regime's regression is measured by a weighted $R^2$,
+
+$$
+R^2_{is} = 1 - \frac{\sum_\tau w^{s}_\tau e^2_{i\tau s}}{\sum_\tau w^{s}_\tau (r_{i\tau} - \bar r^{s}_i)^2},
+$$
+
+where $\bar r^{s}_i$ is the weighted mean of the asset's returns. Without an
+intercept the denominator is $\sum_\tau w^{s}_\tau r^2_{i\tau}$.
+
+Whether an asset's loadings differ across regimes is tested with a Wald test of
+the hypothesis $\beta_{i1} = \beta_{i2} = \dots = \beta_{iM}$, which leaves the
+intercepts unrestricted. Writing the hypothesis as $C \theta_i = 0$, where
+$\theta_i$ stacks the coefficients of all regimes and $C$ takes the differences
+between the loadings of each regime and those of regime 1, the statistic is
+
+$$
+W_i = (C \hat\theta_i)' \big( C \hat\Sigma_{\theta_i} C' \big)^{-1} (C \hat\theta_i),
+$$
+
+with $\hat\Sigma_{\theta_i}$ the sandwich covariance of Section 2.6. Under the
+normal convention $W_i$ is compared with a chi-square distribution with
+$q = (M - 1) K$ degrees of freedom. Under the $t$ convention $W_i / q$ is compared
+with an $F$ distribution with $q$ and $T_i - M k$ degrees of freedom, where $T_i$
+is the number of periods the asset is observed. Because the posterior
+probabilities of each period sum to one, $T_i - M k$ is the sum of the regimes'
+residual degrees of freedom $n_s - k$.
+
 ## 3. Asset return moments
 
 ### 3.1 Regime-conditional moments

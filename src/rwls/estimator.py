@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from rwls.regimes import RegimeFit
 from rwls.settings import RWLSSettings
 
-__all__ = ["RWLS", "RWLSResults", "SparseRegimeWarning"]
+__all__ = ["RWLS", "RWLSResults", "AssetResults", "SparseRegimeWarning"]
 
 
 class SparseRegimeWarning(UserWarning):
@@ -245,6 +247,230 @@ class RWLSResults:
         if not self.settings.intercept:
             return self.params
         return self.params.drop(index="const", level="term")
+
+    # -------------------------------------------------------------------- inference
+
+    @property
+    def terms(self) -> list[str]:
+        return list(self.params.index.get_level_values("term").unique())
+
+    @cached_property
+    def _cov(self) -> np.ndarray:
+        """Sandwich covariance of every asset's coefficients, all regimes stacked.
+
+        Shape ``(N, M k, M k)``, ordered like the rows of ``params`` (Section 2.6).
+        """
+        M, k, N = self.n_regimes, len(self.terms), len(self.asset_names)
+        theta = self.params.to_numpy().reshape(M, k, N)
+        R = self._model.returns.to_numpy(dtype=float)
+        out = np.full((N, M * k, M * k), np.nan)
+        for rows, cols, weights in self._groups:
+            X = self._design[rows]
+            Y = R[np.ix_(rows, cols)]
+            A = [np.linalg.inv(X.T @ (X * w[:, None])) for w in weights]
+            E = [Y - X @ theta[s][:, cols] for s in range(M)]
+            for s in range(M):
+                for r in range(s, M):
+                    u = (weights[s] * weights[r])[:, None] * E[s] * E[r]
+                    middle = np.einsum("tk,tl,tn->nkl", X, X, u)
+                    block = A[s] @ middle @ A[r].T
+                    out[cols, s * k : (s + 1) * k, r * k : (r + 1) * k] = block
+                    if r != s:
+                        out[cols, r * k : (r + 1) * k, s * k : (s + 1) * k] = (
+                            block.transpose(0, 2, 1)
+                        )
+        return out
+
+    @property
+    def bse(self) -> pd.DataFrame:
+        """Sandwich standard errors, laid out like ``params``."""
+        se = np.sqrt(np.diagonal(self._cov, axis1=1, axis2=2)).T
+        return pd.DataFrame(se, index=self.params.index, columns=self.params.columns)
+
+    @property
+    def tvalues(self) -> pd.DataFrame:
+        return self.params / self.bse
+
+    @property
+    def df_resid(self) -> pd.DataFrame:
+        """Residual degrees of freedom, ``n_s - k`` floored at one.
+
+        One row per regime and one column per asset.
+        """
+        return np.maximum(self.mass - len(self.terms), 1.0)
+
+    def _df_by_param(self) -> np.ndarray:
+        k = len(self.terms)
+        return np.repeat(self.df_resid.to_numpy(), k, axis=0)
+
+    @property
+    def pvalues(self) -> pd.DataFrame:
+        """Two-sided p-values: Student's t with ``df_resid`` degrees of freedom, or
+        the standard normal if ``use_t`` is False."""
+        z = np.abs(self.tvalues.to_numpy())
+        if self.settings.use_t:
+            p = 2 * stats.t.sf(z, self._df_by_param())
+        else:
+            p = 2 * stats.norm.sf(z)
+        return pd.DataFrame(p, index=self.params.index, columns=self.params.columns)
+
+    def conf_int(self, alpha: float = 0.05) -> pd.DataFrame:
+        """Confidence intervals at level ``1 - alpha``.
+
+        Columns are ``(asset, "lower")`` and ``(asset, "upper")``.
+        """
+        if self.settings.use_t:
+            q = stats.t.ppf(1 - alpha / 2, self._df_by_param())
+        else:
+            q = stats.norm.ppf(1 - alpha / 2)
+        half = q * self.bse.to_numpy()
+        lower = pd.DataFrame(
+            self.params.to_numpy() - half,
+            index=self.params.index,
+            columns=self.params.columns,
+        )
+        upper = pd.DataFrame(
+            self.params.to_numpy() + half,
+            index=self.params.index,
+            columns=self.params.columns,
+        )
+        out = pd.concat({"lower": lower, "upper": upper}, axis=1)
+        return out.swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False)[
+            pd.MultiIndex.from_product([self.asset_names, ["lower", "upper"]])
+        ]
+
+    def cov_params(self, asset) -> pd.DataFrame:
+        """Sandwich covariance of one asset's coefficients across all regimes."""
+        j = self.asset_names.index(asset)
+        return pd.DataFrame(
+            self._cov[j], index=self.params.index, columns=self.params.index
+        )
+
+    @cached_property
+    def rsquared(self) -> pd.DataFrame:
+        """Weighted R-squared of each regime's regression.
+
+        One minus the weighted residual sum of squares over the weighted total sum
+        of squares, centred on the weighted mean when there is an intercept.
+        """
+        M, k, N = self.n_regimes, len(self.terms), len(self.asset_names)
+        theta = self.params.to_numpy().reshape(M, k, N)
+        R = self._model.returns.to_numpy(dtype=float)
+        out = np.full((M, N), np.nan)
+        for rows, cols, weights in self._groups:
+            X = self._design[rows]
+            Y = R[np.ix_(rows, cols)]
+            for s, w in enumerate(weights):
+                e = Y - X @ theta[s][:, cols]
+                ssr = (w[:, None] * e**2).sum(axis=0)
+                if self.settings.intercept:
+                    mean = (w[:, None] * Y).sum(axis=0) / w.sum()
+                    sst = (w[:, None] * (Y - mean) ** 2).sum(axis=0)
+                else:
+                    sst = (w[:, None] * Y**2).sum(axis=0)
+                out[s, cols] = 1 - ssr / sst
+        return pd.DataFrame(out, index=self.resid_var.index, columns=self.asset_names)
+
+    def wald_equal_loadings(self) -> pd.DataFrame:
+        """Test that each asset's factor loadings are equal in every regime.
+
+        The intercepts are not restricted. Under Student's t (``use_t``) the test is
+        an F test with ``(M - 1) K`` and ``T - M k`` degrees of freedom; otherwise
+        a chi-square test with ``(M - 1) K``.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per asset: statistic, numerator and denominator degrees of
+            freedom, and p-value.
+        """
+        M, k = self.n_regimes, len(self.terms)
+        K = len(self.factor_names)
+        if M < 2:
+            raise ValueError("the test needs at least two regimes")
+        first = k - K  # position of the first loading within a regime's block
+        C = np.zeros(((M - 1) * K, M * k))
+        for s in range(1, M):
+            for f in range(K):
+                row = (s - 1) * K + f
+                C[row, first + f] = -1.0
+                C[row, s * k + first + f] = 1.0
+        theta = self.params.to_numpy().T  # (N, M k)
+        q = C.shape[0]
+        rows = {}
+        for j, asset in enumerate(self.asset_names):
+            d = C @ theta[j]
+            V = C @ self._cov[j] @ C.T
+            if not np.all(np.isfinite(d)) or not np.all(np.isfinite(V)):
+                rows[asset] = (np.nan, q, np.nan, np.nan)
+                continue
+            w = float(d @ np.linalg.solve(V, d))
+            if self.settings.use_t:
+                df2 = max(float(self.nobs[asset]) - M * k, 1.0)
+                rows[asset] = (w / q, q, df2, float(stats.f.sf(w / q, q, df2)))
+            else:
+                rows[asset] = (w, q, np.nan, float(stats.chi2.sf(w, q)))
+        return pd.DataFrame.from_dict(
+            rows, orient="index", columns=["statistic", "df_num", "df_denom", "pvalue"]
+        )
+
+    def __getitem__(self, asset) -> AssetResults:
+        if asset not in self.asset_names:
+            raise KeyError(asset)
+        return AssetResults(self, asset)
+
+
+@dataclass(frozen=True, eq=False)
+class AssetResults:
+    """The results of one asset, in the shape of a single regression.
+
+    Obtained with ``results[asset]``. Every attribute is a view on the parent
+    :class:`RWLSResults`.
+    """
+
+    parent: RWLSResults
+    asset: object
+
+    @property
+    def params(self) -> pd.Series:
+        return self.parent.params[self.asset]
+
+    @property
+    def bse(self) -> pd.Series:
+        return self.parent.bse[self.asset]
+
+    @property
+    def tvalues(self) -> pd.Series:
+        return self.parent.tvalues[self.asset]
+
+    @property
+    def pvalues(self) -> pd.Series:
+        return self.parent.pvalues[self.asset]
+
+    def conf_int(self, alpha: float = 0.05) -> pd.DataFrame:
+        return self.parent.conf_int(alpha)[self.asset]
+
+    def cov_params(self) -> pd.DataFrame:
+        return self.parent.cov_params(self.asset)
+
+    @property
+    def resid_var(self) -> pd.Series:
+        return self.parent.resid_var[self.asset]
+
+    @property
+    def mass(self) -> pd.Series:
+        return self.parent.mass[self.asset]
+
+    @property
+    def rsquared(self) -> pd.Series:
+        return self.parent.rsquared[self.asset]
+
+    @property
+    def nobs(self) -> int:
+        return int(self.parent.nobs[self.asset])
+
+    def wald_equal_loadings(self) -> pd.Series:
+        return self.parent.wald_equal_loadings().loc[self.asset]
 
 
 # ----------------------------------------------------------------------- weights
