@@ -311,3 +311,39 @@ def test_select_regimes_finds_two_regimes(data):
     assert sel.selected["BIC"] == 2
     assert set(sel.fits) == {1, 2, 3}
     assert sel.fits[2].settings.n_regimes == 2
+
+
+# --------------------------------------------------------------------- summary
+
+
+def test_summary_content(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    s = fit.summary()
+    text = str(s)
+    assert text.splitlines()[0].strip() == "Hidden Markov Regime Model"
+    for part in ("Regime statistics", "Factor means (per period)", "Transition"):
+        assert part in text
+    assert all(len(line) <= 78 for line in text.splitlines())
+    stats, means, vols, trans = s.tables
+    np.testing.assert_allclose(stats["Persistence"], np.diag(fit.transmat))
+    np.testing.assert_allclose(stats["Duration"], 1 / (1 - np.diag(fit.transmat)))
+    np.testing.assert_allclose(stats["Occupancy"], fit.posteriors.mean())
+    np.testing.assert_allclose(stats["Forecast"], fit.forecast())
+    assert stats["Assigned"].sum() == pytest.approx(1.0)
+    np.testing.assert_allclose(means.to_numpy(), fit.means.T.to_numpy())
+    np.testing.assert_allclose(vols.to_numpy(), np.sqrt(fit.variances.T.to_numpy()))
+    np.testing.assert_allclose(trans.to_numpy(), fit.transmat.to_numpy())
+    assert list(trans.columns) == ["Regime 1", "Regime 2"]
+    assert "<table" in s._repr_html_()
+
+
+def test_summary_annualizes_on_request(data):
+    X, _ = data
+    fit = RegimeModel(n_regimes=2).fit(X)
+    _, means, vols, _ = fit.summary(periods_per_year=12).tables
+    np.testing.assert_allclose(means.to_numpy(), 12 * fit.means.T.to_numpy())
+    np.testing.assert_allclose(
+        vols.to_numpy(), np.sqrt(12 * fit.variances.T.to_numpy())
+    )
+    assert "Factor means (annualized)" in str(fit.summary(periods_per_year=12))

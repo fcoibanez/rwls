@@ -25,6 +25,7 @@ from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 
 from rwls.settings import RegimeSettings
+from rwls.summary import Summary
 
 __all__ = ["RegimeModel", "RegimeFit", "RegimeSelection", "select_regimes"]
 
@@ -319,6 +320,108 @@ class RegimeFit:
         col = self.means[factor]
         return self.relabel(col.sort_values(ascending=ascending, kind="stable").index)
 
+    # ---------------------------------------------------------------------- summary
+
+    def summary(self, periods_per_year: int | None = None) -> Summary:
+        """Text and HTML summary of the fit.
+
+        Parameters
+        ----------
+        periods_per_year : int, optional
+            If given, factor means are multiplied by it and volatilities by its
+            square root, so that both are annual. Otherwise they are per period.
+
+        Returns
+        -------
+        Summary
+            Printing it gives the text layout; in a notebook it renders as HTML.
+        """
+        s = self.settings
+        labels = [f"Regime {k}" for k in self.means.index]
+        start, end = _period(self.index[0]), _period(self.index[-1])
+
+        out = Summary("Hidden Markov Regime Model")
+        out.add_header(
+            [
+                ("No. observations:", self.nobs),
+                ("Sample:", start),
+                ("", f"- {end}"),
+                ("No. factors:", len(self.factor_names)),
+                ("No. regimes:", self.n_regimes),
+                ("Covariance:", s.covariance),
+            ],
+            [
+                ("Log-likelihood:", self.loglike),
+                ("No. parameters:", self.n_params),
+                ("AIC:", self.aic),
+                ("BIC:", self.bic),
+                ("HQIC:", self.hqic),
+                ("ICL:", self.icl),
+            ],
+            spec="{:.2f}",
+        )
+
+        persistence = np.diag(self.transmat.to_numpy())
+        with np.errstate(divide="ignore"):
+            duration = 1.0 / (1.0 - persistence)
+        post = self.posteriors.to_numpy()
+        assigned = np.bincount(post.argmax(axis=1), minlength=self.n_regimes) / len(
+            post
+        )
+        stats = pd.DataFrame(
+            {
+                "Persistence": persistence,
+                "Duration": duration,
+                "Occupancy": post.mean(axis=0),
+                "Assigned": assigned,
+                "Forecast": self.forecast().to_numpy(),
+            },
+            index=pd.Index(labels, name=""),
+        )
+        out.add_table(
+            stats,
+            title="Regime statistics",
+            formats={"Duration": "{:.1f}"},
+            default="{:.3f}",
+        )
+
+        scale_mean = 1.0 if periods_per_year is None else float(periods_per_year)
+        scale_vol = np.sqrt(scale_mean)
+        unit = "per period" if periods_per_year is None else "annualized"
+        means = self.means.T * scale_mean
+        vols = np.sqrt(self.variances.T) * scale_vol
+        for frame, title in ((means, "Factor means"), (vols, "Factor volatilities")):
+            frame = frame.copy()
+            frame.columns = labels
+            frame.index.name = ""
+            out.add_table(frame, title=f"{title} ({unit})")
+
+        trans = self.transmat.copy()
+        trans.index = pd.Index(labels, name="From / to")
+        trans.columns = labels
+        out.add_table(trans, title="Transition probabilities", default="{:.3f}")
+
+        status = (
+            f"EM converged after {self.n_iter} iterations."
+            if self.converged
+            else f"EM stopped after {self.n_iter} iterations without meeting the "
+            "tolerance."
+        )
+        starts = "1 start" if s.n_starts == 1 else f"best of {s.n_starts} starts"
+        out.add_notes(
+            [
+                status,
+                f"Variance prior {s.variance_prior:g}, tolerance {s.tol:g}, {starts} "
+                f"(seed {s.seed}).",
+                "Duration is the expected number of periods in a regime once "
+                "entered; Occupancy is the average posterior probability; Assigned "
+                "is the share of periods in which the regime is the most probable.",
+                "EM numbers regimes arbitrarily; use sort_by or align_to for a fixed "
+                "numbering.",
+            ]
+        )
+        return out
+
     def _position(self, regime: int) -> int:
         if regime not in self.means.index:
             raise KeyError(
@@ -494,6 +597,15 @@ def _healthy(mdl: GaussianHMM) -> bool:
 
 
 # ------------------------------------------------------------------ input handling
+
+
+def _period(stamp) -> str:
+    """A compact label for one period of the index."""
+    if isinstance(stamp, pd.Timestamp):
+        if stamp == stamp + pd.offsets.MonthEnd(0):
+            return f"{stamp:%Y-%m}"
+        return f"{stamp:%Y-%m-%d}"
+    return str(stamp)
 
 
 def _labels(n: int) -> pd.RangeIndex:
