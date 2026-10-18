@@ -62,12 +62,10 @@ closed form.
 - Vectorized RWLS estimation for large cross-sections, with effective sample
   sizes and sampling covariances of the regime-specific loadings.
 - Regime-conditional and mixture moments of asset returns.
-- Simulation tools for regime-switching factor models, for Monte Carlo
-  evaluation of the estimators.
 
 Applications include conditional beta estimation, regime-dependent risk models
-and portfolio construction. Portfolio optimization is one use of the estimated
-moments, not the purpose of the package.
+and portfolio construction. These are left to the user: the package covers the
+estimator and the moments it implies.
 
 ## Status
 
