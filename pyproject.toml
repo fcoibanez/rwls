@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rwls"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Regime-weighted least squares: regime-dependent factor models estimated with hidden Markov posterior probabilities."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Francisco Ibanez" }]
 keywords = ["financial econometrics", "factor models", "regime switching", "hidden Markov model", "weighted least squares"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Financial and Insurance Industry",
     "Programming Language :: Python :: 3",
@@ -37,6 +37,11 @@ dev = [
 
 [project.urls]
 Source = "https://github.com/fcoibanez/rwls"
+Changelog = "https://github.com/fcoibanez/rwls/blob/main/CHANGELOG.md"
+Methodology = "https://github.com/fcoibanez/rwls/blob/main/docs/methodology.md"
+
+[tool.hatch.version]
+path = "src/rwls/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rwls"]
@@ -53,6 +58,8 @@ markers = [
 line-length = 88
 target-version = "py310"
 src = ["src", "tests"]
+# Code examples in Markdown are laid out by hand (aligned comments).
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "NPY"]
