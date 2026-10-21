@@ -13,7 +13,7 @@ from rwls.moments import RegimeMoments
 from rwls.regimes import RegimeFit, RegimeModel, RegimeSelection, select_regimes
 from rwls.settings import RegimeSettings, RWLSSettings
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AssetResults",
