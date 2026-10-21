@@ -4,7 +4,7 @@ import pytest
 from hmmlearn.hmm import GaussianHMM
 
 from rwls import RegimeSettings
-from rwls.regimes import RegimeModel, _healthy
+from rwls.regimes import RegimeModel, _build_hmm, _fit_start, _healthy, _objective
 
 
 def _simulate(n=400, seed=0):
@@ -24,26 +24,27 @@ def data():
     return _simulate()
 
 
-def _reference_cold(values, n_states, tol, seed=13):
-    """The cold start of the research code (regimeaware.core.estimation.build_hmm).
+class _ReferenceHMM(GaussianHMM):
+    """Monitored on the penalized log-likelihood of Section 1.2 (diagonal case)."""
 
-    The research code left the starting means to hmmlearn, which runs k-means with
-    ten restarts from version 0.3.3 and with one before. The paper's results were
-    produced with 0.3.3, so the reference fixes the ten restarts explicitly and does
-    not depend on the installed version. The starting transition matrix and
-    variances are still hmmlearn's own, drawn the same way in every 0.3 release.
-    """
+    def _compute_lower_bound(self, curr_logprob):
+        variances = np.diagonal(self.covars_, axis1=1, axis2=2)
+        return curr_logprob - 0.5 * np.sum(self.covars_prior / variances)
+
+
+def _reference_cold(values, n_states, tol, seed=13):
+    """A cold start as Section 1.2 describes it, built directly on hmmlearn."""
     from sklearn.cluster import KMeans
 
-    mdl = GaussianHMM(
+    mdl = _ReferenceHMM(
         n_components=n_states,
         covariance_type="diag",
         n_iter=1000,
-        min_covar=1e-3,
+        covars_prior=0.01 * values.var(axis=0),
         tol=tol,
         implementation="scaling",
         random_state=seed,
-        init_params="tc",
+        init_params="t",
         params="tmc",
     )
     mdl.startprob_ = np.full(n_states, 1 / n_states)
@@ -52,16 +53,17 @@ def _reference_cold(values, n_states, tol, seed=13):
         .fit(values)
         .cluster_centers_
     )
+    mdl.covars_ = np.tile(1.01 * values.var(axis=0, ddof=1), (n_states, 1))
     return mdl.fit(values)
 
 
 def _reference_warm(values, previous, tol):
-    """The warm start of the research code."""
-    mdl = GaussianHMM(
+    """A refit from an earlier fit as Section 1.3 describes it."""
+    mdl = _ReferenceHMM(
         n_components=previous.n_components,
         covariance_type="diag",
         n_iter=1000,
-        min_covar=1e-3,
+        covars_prior=0.01 * values.var(axis=0),
         tol=tol,
         implementation="scaling",
         init_params="",
@@ -76,7 +78,7 @@ def _reference_warm(values, previous, tol):
 
 
 @pytest.mark.parametrize("tol", [0.1, 1e-4])
-def test_cold_start_reproduces_the_research_code(data, tol):
+def test_cold_start_follows_the_methodology(data, tol):
     X, _ = data
     fit = RegimeModel(n_regimes=2, tol=tol, n_starts=1).fit(X)
     ref = _reference_cold(X.to_numpy(), 2, tol)
@@ -86,9 +88,10 @@ def test_cold_start_reproduces_the_research_code(data, tol):
     )
     np.testing.assert_allclose(fit.covariances, ref.covars_, rtol=0, atol=1e-12)
     assert fit.loglike == pytest.approx(ref.score(X.to_numpy()), abs=1e-8)
+    assert fit.n_iter == ref.monitor_.iter
 
 
-def test_warm_start_reproduces_the_research_code(data):
+def test_warm_start_follows_the_methodology(data):
     X, _ = data
     model = RegimeModel(n_regimes=2, tol=0.1, n_starts=1)
     first = model.fit(X.iloc[:300])
@@ -151,14 +154,69 @@ def test_more_starts_never_lower_the_likelihood(data):
     assert many.loglike >= one.loglike - 1e-9
 
 
-def test_full_covariance_puts_the_prior_on_the_variances(data):
+@pytest.mark.parametrize("covariance", ["diag", "full"])
+def test_em_objective_never_falls(data, covariance):
+    # A large prior makes the penalty matter. Each fit runs one more iteration
+    # than the last from the same start, which traces the EM path.
+    X = data[0].to_numpy()
+    path = []
+    for k in range(1, 41):
+        s = RegimeSettings(
+            n_regimes=2,
+            covariance=covariance,
+            variance_prior=2.0,
+            max_iter=k,
+            tol=1e-12,
+        )
+        _, mdl = _fit_start(X, s, 13)
+        path.append(_objective(mdl, X))
+    assert np.all(np.diff(path) >= -1e-9)
+
+
+def test_prior_is_relative_to_the_factor_variances(data):
+    X = data[0].to_numpy()
+    diag = RegimeModel(n_regimes=2, variance_prior=0.5)._build(X)
+    np.testing.assert_allclose(diag.covars_prior, 0.5 * X.var(axis=0))
+    full = RegimeModel(n_regimes=2, covariance="full", variance_prior=0.5)._build(X)
+    np.testing.assert_allclose(full.covars_prior, np.diag(0.5 * X.var(axis=0)))
+
+
+@pytest.mark.parametrize("scale", [100.0, 0.25])
+def test_regimes_do_not_depend_on_the_scale_of_the_returns(data, scale):
+    # Percent instead of decimals, or returns a quarter as large, with every
+    # setting at its default: the same regimes, the same grouping of the starts.
     X, _ = data
-    model = RegimeModel(n_regimes=2, covariance="full", variance_prior=0.5)
-    np.testing.assert_allclose(model._build(2).covars_prior, 0.5 * np.eye(2))
-    fit = model.fit(X)
-    for cov in fit.covariances:
-        np.testing.assert_allclose(cov, cov.T)
-        assert np.all(np.linalg.eigvalsh(cov) > 0)
+    model = RegimeModel(n_regimes=2, n_starts=20, selection="modal", tol=1e-8)
+    base, scaled = model.fit(X), model.fit(scale * X)
+    assert scaled.starts == base.starts
+    np.testing.assert_allclose(
+        scaled.posteriors.to_numpy(), base.posteriors.to_numpy(), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        scaled.means.to_numpy(), scale * base.means.to_numpy(), rtol=1e-5
+    )
+
+
+def test_cold_refit_keeps_the_labels_of_start_from(data, monkeypatch):
+    X, _ = data
+    model = RegimeModel(n_regimes=2, n_starts=1)
+    previous = model.fit(X).relabel([2, 1])
+
+    def unhealthy(values, previous, s):
+        mdl = _build_hmm(s, values)
+        mdl.n_features = values.shape[1]
+        mdl.startprob_ = np.full(2, 0.5)
+        mdl.transmat_ = np.full((2, 2), np.nan)
+        mdl.means_ = np.zeros((2, values.shape[1]))
+        mdl.covars_ = np.ones((2, values.shape[1]))
+        return mdl
+
+    monkeypatch.setattr("rwls.regimes._fit_warm", unhealthy)
+    refit = model.fit(X, start_from=previous)
+    assert refit.starts is not None  # refitted from a cold start
+    np.testing.assert_allclose(
+        refit.means.to_numpy(), previous.means.to_numpy(), atol=1e-8
+    )
 
 
 def test_variance_prior_inflates_the_variances(data):
@@ -401,7 +459,11 @@ def test_choose_best_and_modal():
         (8.9, _fake(*A)),
         (-np.inf, None),
     ]
-    best, info = _choose(results, RegimeSettings(n_regimes=2, seed=0), ["Mkt-RF"])
+    # Means in units of a factor with standard deviation 0.05.
+    scale = np.array([0.05])
+    best, info = _choose(
+        results, RegimeSettings(n_regimes=2, seed=0), ["Mkt-RF"], scale
+    )
     assert best is results[0][1]
     assert info == {
         "starts": 4,
@@ -411,12 +473,12 @@ def test_choose_best_and_modal():
         "selection": "best",
     }
     modal, info = _choose(
-        results, RegimeSettings(n_regimes=2, selection="modal"), ["Mkt-RF"]
+        results, RegimeSettings(n_regimes=2, selection="modal"), ["Mkt-RF"], scale
     )
     assert modal is results[1][1]
     assert (info["reached"], info["selection"]) == (2, "modal")
     with pytest.raises(RuntimeError):
-        _choose([(-np.inf, None)], RegimeSettings(), ["Mkt-RF"])
+        _choose([(-np.inf, None)], RegimeSettings(), ["Mkt-RF"], scale)
 
 
 def test_order_factor_by_name_or_position():

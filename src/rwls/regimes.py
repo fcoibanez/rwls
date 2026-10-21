@@ -64,7 +64,8 @@ class RegimeModel:
         start_from : RegimeFit, optional
             An earlier fit, typically on a shorter sample, to start from instead
             of a cold start. Its regime labels carry over. If the resulting fit
-            fails the health check, the model is refitted from a cold start.
+            fails the health check, the model is refitted from a cold start and
+            its regimes are aligned to those of ``start_from``.
         n_jobs : int
             Number of processes used for cold starts when ``n_starts`` exceeds
             one. ``-1`` uses all processors.
@@ -75,18 +76,22 @@ class RegimeModel:
         """
         values, index, names = _as_matrix(factors)
         s = self.settings
-        if start_from is not None:
-            if start_from.n_regimes != s.n_regimes or start_from.factor_names != names:
-                raise ValueError("start_from must have the same regimes and factors")
-            mdl, starts = _fit_warm(values, start_from._model, s), None
-            if not _healthy(mdl):
-                mdl, starts = _fit_cold(values, s, n_jobs, names)
-        else:
+        if start_from is None:
             mdl, starts = _fit_cold(values, s, n_jobs, names)
-        return RegimeFit._from_model(mdl, values, index, names, s, starts)
+            return RegimeFit._from_model(mdl, values, index, names, s, starts)
 
-    def _build(self, n_features: int) -> GaussianHMM:
-        return _build_hmm(self.settings, n_features)
+        if start_from.n_regimes != s.n_regimes or start_from.factor_names != names:
+            raise ValueError("start_from must have the same regimes and factors")
+        mdl = _fit_warm(values, start_from._model, s)
+        if _healthy(mdl):
+            return RegimeFit._from_model(mdl, values, index, names, s)
+        # A cold start numbers the regimes arbitrarily; keep those of start_from.
+        mdl, starts = _fit_cold(values, s, n_jobs, names)
+        fit = RegimeFit._from_model(mdl, values, index, names, s, starts)
+        return fit.align_to(start_from)
+
+    def _build(self, values) -> GaussianHMM:
+        return _build_hmm(self.settings, np.asarray(values, dtype=float))
 
 
 @dataclass(frozen=True, eq=False)
@@ -419,8 +424,8 @@ class RegimeFit:
         out.add_notes(
             [
                 status,
-                f"Variance prior {s.variance_prior:g}, tolerance {s.tol:g}, first "
-                f"seed {s.seed}. {starts}",
+                f"Variance prior {s.variance_prior:g} of each factor's variance, "
+                f"tolerance {s.tol:g}, first seed {s.seed}. {starts}",
                 "Duration is the expected number of periods in a regime once "
                 "entered; Occupancy is the average posterior probability; Assigned "
                 "is the share of periods in which the regime is the most probable.",
@@ -504,7 +509,7 @@ def select_regimes(
         runs = [r for (mm, _, _), r in zip(jobs, results, strict=True) if mm == m]
         s_m = base.replace(n_regimes=m, n_starts=n_starts)
         try:
-            mdl, starts = _choose(runs, s_m, names)
+            mdl, starts = _choose(runs, s_m, names, values.std(axis=0))
         except RuntimeError:
             continue
         fit = RegimeFit._from_model(mdl, values, index, names, s_m, starts)
@@ -529,17 +534,40 @@ def select_regimes(
 # ------------------------------------------------------------------ fitting helpers
 
 
-def _build_hmm(s: RegimeSettings, n_features: int) -> GaussianHMM:
-    if s.covariance == "diag":
-        prior = s.variance_prior
-    else:
-        # For full matrices the library adds a scalar prior to every element,
+class _GaussianHMM(GaussianHMM):
+    """hmmlearn's Gaussian HMM, monitored on the objective its updates maximize.
+
+    With a variance prior the EM updates maximize the log-likelihood less the
+    penalty ``0.5 * sum_s tr(C V_s^{-1})``, where ``C`` is the diagonal matrix of
+    priors and ``V_s`` the covariance matrix of regime ``s``. hmmlearn checks
+    convergence on the log-likelihood alone, which these updates can lower, and
+    stops as soon as it falls. Monitoring the penalized objective, which never
+    falls, lets EM run until it has converged.
+    """
+
+    def _compute_lower_bound(self, curr_logprob):
+        return curr_logprob - _penalty(self)
+
+
+def _penalty(mdl: GaussianHMM) -> float:
+    """The variance prior's penalty at the current parameters of ``mdl``."""
+    prior = np.asarray(mdl.covars_prior, dtype=float)
+    c = np.diagonal(prior) if prior.ndim == 2 else prior
+    precisions = np.diagonal(np.linalg.inv(mdl.covars_), axis1=1, axis2=2)
+    return 0.5 * float(np.sum(c * precisions))
+
+
+def _build_hmm(s: RegimeSettings, values: np.ndarray) -> GaussianHMM:
+    # The prior is proportional to each factor's variance, so that it has the
+    # same effect whatever the units or frequency of the returns.
+    prior = s.variance_prior * values.var(axis=0)
+    if s.covariance == "full":
+        # For full matrices the library adds the prior to every element,
         # off-diagonal ones included. The methodology puts it on the variances.
-        prior = s.variance_prior * np.eye(n_features)
-    return GaussianHMM(
+        prior = np.diag(prior)
+    return _GaussianHMM(
         n_components=s.n_regimes,
         covariance_type=s.covariance,
-        min_covar=s.init_variance_floor,
         covars_prior=prior,
         n_iter=s.max_iter,
         tol=s.tol,
@@ -547,21 +575,36 @@ def _build_hmm(s: RegimeSettings, n_features: int) -> GaussianHMM:
     )
 
 
+def _starting_covariances(values: np.ndarray, s: RegimeSettings) -> np.ndarray:
+    """Cold-start covariances: the full-sample ones, variances raised by a share."""
+    cov = np.atleast_2d(np.cov(values.T))
+    cov = cov + np.diag(s.init_variance_floor * np.diag(cov))
+    if s.covariance == "diag":
+        return np.tile(np.diag(cov), (s.n_regimes, 1))
+    return np.tile(cov, (s.n_regimes, 1, 1))
+
+
+def _objective(mdl: GaussianHMM, values: np.ndarray) -> float:
+    """The EM objective: log-likelihood less the variance prior's penalty."""
+    return float(mdl.score(values)) - _penalty(mdl)
+
+
 def _fit_start(values: np.ndarray, s: RegimeSettings, seed: int):
-    """One cold start: ``(log-likelihood, model)``, or ``(-inf, None)`` if unhealthy."""
-    mdl = _build_hmm(s, values.shape[1])
+    """One cold start: ``(objective, model)``, or ``(-inf, None)`` if unhealthy."""
+    mdl = _build_hmm(s, values)
     mdl.random_state = seed
-    mdl.init_params = "tc"
+    mdl.init_params = "t"
     mdl.params = "tmc"
     mdl.startprob_ = np.full(s.n_regimes, 1.0 / s.n_regimes)
     kmeans = KMeans(
         n_clusters=s.n_regimes, random_state=seed, n_init=s.kmeans_restarts
     ).fit(values)
     mdl.means_ = kmeans.cluster_centers_
+    mdl.covars_ = _starting_covariances(values, s)
     mdl.fit(values)
     if not _healthy(mdl):
         return -np.inf, None
-    return float(mdl.score(values)), mdl
+    return _objective(mdl, values), mdl
 
 
 def _fit_cold(values: np.ndarray, s: RegimeSettings, n_jobs: int, names):
@@ -573,22 +616,25 @@ def _fit_cold(values: np.ndarray, s: RegimeSettings, n_jobs: int, names):
         results = Parallel(n_jobs=n_jobs)(
             delayed(_fit_start)(values, s, seed) for seed in seeds
         )
-    return _choose(results, s, names)
+    return _choose(results, s, names, values.std(axis=0))
 
 
-def _choose(results, s: RegimeSettings, names):
+def _choose(results, s: RegimeSettings, names, scale):
     """The selected model among the starts' results, and a record of the starts.
 
-    ``results`` holds ``(log-likelihood, model)`` per start, in seed order, with
-    ``(-inf, None)`` for starts that failed the health check.
+    ``results`` holds ``(objective, model)`` per start, in seed order, with
+    ``(-inf, None)`` for starts that failed the health check. ``scale`` holds the
+    standard deviation of each factor, in which mean differences are measured.
     """
     fits = [
-        (ll, mdl, s.seed + j) for j, (ll, mdl) in enumerate(results) if mdl is not None
+        (obj, mdl, s.seed + j)
+        for j, (obj, mdl) in enumerate(results)
+        if mdl is not None
     ]
     if not fits:
         raise RuntimeError("the regime model failed to converge from a cold start")
     order = _factor_position(s.modal_order_factor, names)
-    groups = _group_optima(fits, order, s.modal_mean_tol, s.modal_transition_tol)
+    groups = _group_optima(fits, order, s.modal_mean_tol, s.modal_transition_tol, scale)
     if s.selection == "modal":
         group = groups[0]
     else:
@@ -604,19 +650,20 @@ def _choose(results, s: RegimeSettings, names):
     return group[0][1], starts
 
 
-def _group_optima(fits, order, mean_tol, trans_tol):
+def _group_optima(fits, order, mean_tol, trans_tol, scale=1.0):
     """Group fits that reached the same optimum.
 
     With regimes ordered by their mean on factor ``order``, two fits reached the
-    same optimum if every regime mean agrees within ``mean_tol`` and every
-    transition probability within ``trans_tol``. Fits are visited from the
-    highest likelihood down, and each joins the first group whose best fit it
-    matches. Groups are returned largest first, each best fit first.
+    same optimum if every regime mean, divided by ``scale``, agrees within
+    ``mean_tol`` and every transition probability within ``trans_tol``. Fits are
+    visited from the highest objective down, and each joins the first group
+    whose best fit it matches. Groups are returned largest first, each best fit
+    first.
     """
 
     def signature(m):
         o = np.argsort(m.means_[:, order])[::-1]
-        return m.means_[o], m.transmat_[np.ix_(o, o)]
+        return m.means_[o] / scale, m.transmat_[np.ix_(o, o)]
 
     groups = []
     for fit in sorted(fits, key=lambda f: -f[0]):
@@ -649,7 +696,7 @@ def _describe_starts(starts: dict | None) -> str:
     n, rule = starts["starts"], starts["selection"]
     if n == 1:
         return "Fitted from a single start."
-    what = "Highest-likelihood fit" if rule == "best" else "Model reached most often"
+    what = "Best fit" if rule == "best" else "Model reached most often"
     return (
         f"{what} of {n} starts, reached by {starts['reached']}; "
         f"{starts['distinct']} distinct optima."
@@ -657,7 +704,7 @@ def _describe_starts(starts: dict | None) -> str:
 
 
 def _fit_warm(values: np.ndarray, previous: GaussianHMM, s: RegimeSettings):
-    mdl = _build_hmm(s, values.shape[1])
+    mdl = _build_hmm(s, values)
     mdl.init_params = ""
     mdl.params = "tmc"
     mdl.startprob_ = np.full(s.n_regimes, 1.0 / s.n_regimes)

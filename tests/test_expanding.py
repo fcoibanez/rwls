@@ -8,7 +8,7 @@ from rwls.regimes import RegimeModel
 from test_estimator import _simulate, ref_fit_wls, ref_guard_weights
 from test_regimes import _reference_cold, _reference_warm
 
-PAPER = RegimeSettings(n_regimes=2, tol=0.1, n_starts=1)
+QUICK = RegimeSettings(n_regimes=2, tol=0.1, n_starts=1)
 RECENT = RWLSSettings(fallback="recent")
 
 
@@ -18,7 +18,7 @@ def data():
     return returns, factors
 
 
-def test_reproduces_the_research_backtest_loop(data):
+def test_reproduces_the_backtest_loop(data):
     returns, factors = data
     steps = list(
         expanding(
@@ -26,7 +26,7 @@ def test_reproduces_the_research_backtest_loop(data):
             factors,
             start=301,
             end=factors.index[302],
-            regime_settings=PAPER,
+            regime_settings=QUICK,
             rwls_settings=RECENT,
         )
     )
@@ -63,9 +63,9 @@ def test_reproduces_the_research_backtest_loop(data):
 
 def test_start_as_a_count_or_a_date(data):
     returns, factors = data
-    by_count = next(expanding(returns, factors, start=301, regime_settings=PAPER))
+    by_count = next(expanding(returns, factors, start=301, regime_settings=QUICK))
     by_date = next(
-        expanding(returns, factors, start=factors.index[300], regime_settings=PAPER)
+        expanding(returns, factors, start=factors.index[300], regime_settings=QUICK)
     )
     assert by_count.date == by_date.date == factors.index[300]
     assert by_count.regimes.nobs == 301
@@ -74,7 +74,7 @@ def test_start_as_a_count_or_a_date(data):
 
 def test_each_step_sees_only_the_data_available(data):
     returns, factors = data
-    for step in expanding(returns, factors, start=320, regime_settings=PAPER):
+    for step in expanding(returns, factors, start=320, regime_settings=QUICK):
         assert step.regimes.index[-1] == step.date
         assert step.results.index[-1] == step.date
         assert step.regimes.starts is None or step.date == factors.index[319]
@@ -83,7 +83,7 @@ def test_each_step_sees_only_the_data_available(data):
 def test_rolling_window(data):
     returns, factors = data
     steps = list(
-        expanding(returns, factors, start=320, window=200, regime_settings=PAPER)
+        expanding(returns, factors, start=320, window=200, regime_settings=QUICK)
     )
     assert all(s.regimes.nobs == 200 for s in steps)
     assert all(len(s.results.index) == 200 for s in steps)
@@ -97,7 +97,7 @@ def test_regime_factors_subset(data):
             factors,
             start=320,
             regime_factors=["Mkt-RF"],
-            regime_settings=PAPER,
+            regime_settings=QUICK,
         )
     )
     assert step.regimes.factor_names == ["Mkt-RF"]
@@ -109,7 +109,7 @@ def test_regime_factors_subset(data):
 def test_regimes_only(data):
     returns, factors = data
     steps = list(
-        expanding(returns, factors, start=328, estimate=False, regime_settings=PAPER)
+        expanding(returns, factors, start=328, estimate=False, regime_settings=QUICK)
     )
     assert len(steps) == 3
     assert all(s.results is None for s in steps)
@@ -117,7 +117,7 @@ def test_regimes_only(data):
 
 def test_initial_fit_and_stable_labels(data):
     returns, factors = data
-    first = RegimeModel(PAPER).fit(factors.iloc[:300])
+    first = RegimeModel(QUICK).fit(factors.iloc[:300])
     swapped = first.relabel([2, 1])
     plain = list(
         expanding(
@@ -125,7 +125,7 @@ def test_initial_fit_and_stable_labels(data):
             factors,
             start=301,
             end=factors.index[302],
-            regime_settings=PAPER,
+            regime_settings=QUICK,
             initial=first,
             estimate=False,
         )
@@ -136,7 +136,7 @@ def test_initial_fit_and_stable_labels(data):
             factors,
             start=301,
             end=factors.index[302],
-            regime_settings=PAPER,
+            regime_settings=QUICK,
             initial=swapped,
             estimate=False,
         )

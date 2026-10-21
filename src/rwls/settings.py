@@ -37,35 +37,40 @@ class RegimeSettings:
     covariance : {"diag", "full"}
         Form of the within-regime factor covariance matrix.
     variance_prior : float
-        Prior ``c_0`` added to the numerator of each variance update. Zero gives
-        the maximum-likelihood estimates.
+        Prior ``c_0`` on the variances, as a share of each factor's variance in
+        the estimation sample: ``c_0`` times that variance is added to the
+        numerator of each variance update. Zero gives the maximum-likelihood
+        estimates.
     tol : float
-        EM stops when the log-likelihood improves by less than this amount.
+        EM stops when its objective, the log-likelihood less the penalty
+        implied by the variance prior, improves by less than this amount.
     max_iter : int
         Maximum number of EM iterations.
     init_variance_floor : float
-        Added to the full-sample variances that initialize every regime on a cold
-        start. It affects the starting values only and is not a floor on the
-        estimates.
+        On a cold start every regime starts from the full-sample variances,
+        each raised by this share of itself. It affects the starting values
+        only and is not a floor on the estimates.
     kmeans_restarts : int
         Number of k-means restarts used to initialize the means on a cold start.
     n_starts : int
         Number of cold starts. With more than one, each start uses a different
-        seed and the fit with the highest log-likelihood is kept.
+        seed and one fit is kept by the rule in ``selection``.
     seed : int
         Seed of the first cold start. Start ``j`` uses ``seed + j``.
     selection : {"best", "modal"}
         How a model is chosen among several cold starts. ``"best"`` keeps the
-        fit with the highest likelihood. ``"modal"`` groups the fits that
-        reached the same optimum and keeps the best fit of the group reached
-        by the most starts.
+        fit with the highest value of the EM objective (see ``tol``), which
+        with no variance prior is the highest likelihood. ``"modal"`` groups
+        the fits that reached the same optimum and keeps the best fit of the
+        group reached by the most starts.
     modal_order_factor : int or str
         Factor, by position or name, whose mean orders the regimes when fits
         are compared for ``"modal"`` selection. The default is the first
         column, conventionally the market.
     modal_mean_tol, modal_transition_tol : float
         Two fits reached the same optimum if every regime mean agrees within
-        ``modal_mean_tol`` and every transition probability within
+        ``modal_mean_tol`` standard deviations of its factor in the estimation
+        sample, and every transition probability within
         ``modal_transition_tol``, with regimes ordered by
         ``modal_order_factor``.
     transition_floor : float
@@ -81,13 +86,13 @@ class RegimeSettings:
     variance_prior: float = 0.01
     tol: float = 1e-4
     max_iter: int = 1000
-    init_variance_floor: float = 1e-3
+    init_variance_floor: float = 0.01
     kmeans_restarts: int = 10
     n_starts: int = 10
     seed: int = 13
     selection: Literal["best", "modal"] = "best"
     modal_order_factor: int | str = 0
-    modal_mean_tol: float = 0.0025
+    modal_mean_tol: float = 0.05
     modal_transition_tol: float = 0.05
     transition_floor: float = 1e-8
     forecast_floor: float = 1e-12

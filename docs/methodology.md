@@ -54,38 +54,58 @@ The transition matrix is updated by the usual EM step,
 $a_{sr} \propto \sum_t \xi_t(s, r)$, where $\xi_t(s, r)$ is the posterior
 probability of a transition from $s$ to $r$ between $t$ and $t + 1$. The means
 are $m_s = \sum_t \gamma_t(s) f_t  /  \sum_t \gamma_t(s)$, and the variances
-include a prior $c_0$:
+include a prior:
 
 $$
-v_{sj} = \frac{c_0 + \sum_t \gamma_t(s) (f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)}.
+v_{sj} = \frac{c_0 \hat\sigma_j^2 + \sum_t \gamma_t(s) (f_{tj} - m_{sj})^2}{\sum_t \gamma_t(s)},
 $$
 
+where $\hat\sigma_j^2$ is the variance of factor $j$ in the estimation sample.
 The prior keeps the variances of a regime with little posterior mass away from
-zero, which stops the regime from collapsing onto a handful of observations. The
-default is $c_0 = 0.01$, and $c_0 = 0$ gives the maximum-likelihood estimates. In
-simulations calibrated to US factor returns, the prior improves the
-classification of the true regimes by several percentage points.
+zero, which stops the regime from collapsing onto a handful of observations.
+Being proportional to each factor's variance, it has the same effect whatever the
+units or frequency of the returns. The default is $c_0 = 0.01$, which adds to
+each regime one hundredth of a typical squared deviation, and $c_0 = 0$ gives the
+maximum-likelihood estimates.
+
+With the prior, these updates maximize the penalized log-likelihood
+
+$$
+\ell_c(\theta) = \ell(\theta) - \frac{c_0}{2} \sum_{s=1}^{M} \sum_{j=1}^{K} \frac{\hat\sigma_j^2}{v_{sj}},
+$$
+
+where $\ell(\theta)$ is the log-likelihood. Each iteration raises $\ell_c$, while
+$\ell$ itself can fall. With a full covariance matrix the penalty is
+$\tfrac12 \sum_s \mathrm{tr}(C V_s^{-1})$, with $C = c_0\,\mathrm{diag}(\hat\sigma_1^2, \dots, \hat\sigma_K^2)$.
 
 From a cold start, the means are initialized by $k$-means with ten restarts, the
-variances of every regime by the full-sample variances plus $10^{-3}$, and the
+variances of every regime by the full-sample variances raised by 1%, and the
 rows of the transition matrix by draws from a Dirichlet distribution. All random
 draws use a fixed seed.
 
+Every setting that is measured in units of the returns is set relative to the
+data: the prior and the starting variances in proportion to each factor's
+variance, and the tolerance for grouping fits below in units of each factor's
+standard deviation. Fits are therefore the same whatever the units or frequency
+of the returns.
+
 The likelihood has many local maxima, and a single cold start can stop at a poor
 one. By default the model is therefore fitted from ten cold starts with
-consecutive seeds, and the fit with the highest likelihood is kept. Refits that
+consecutive seeds, and the fit with the highest $\ell_c$ is kept. Refits that
 start from an earlier fit (Section 1.3) use a single start.
 
 Alternatively, the model reached most often can be kept. Fits from different
 starts are grouped: with regimes ordered by their mean on one factor, two fits
-reached the same optimum if every regime mean agrees within 0.0025 and every
-transition probability within 0.05. The best fit of the largest group is kept.
+reached the same optimum if every regime mean agrees within 0.05 standard
+deviations of its factor and every transition probability within 0.05. The best fit of the largest group is kept.
 This is the model a researcher refitting from a random start is most likely to
 obtain, which need not be the one of highest likelihood.
 
-Iteration stops when the log-likelihood improves by less than a tolerance
-$\varepsilon$, or after 1,000 iterations. The default is $\varepsilon = 10^{-4}$.
-Looser tolerances can stop a warm-started refit before it reaches the optimum.
+Iteration stops when $\ell_c$ improves by less than a tolerance $\varepsilon$, or
+after 1,000 iterations. The default is $\varepsilon = 10^{-4}$. Stopping on
+$\ell$ instead would end EM at the first iteration in which the prior lowers the
+likelihood, before the estimates have converged. Looser tolerances can stop a
+warm-started refit before it reaches the optimum.
 
 ### 1.3 Re-estimation through time
 
@@ -99,7 +119,8 @@ previous fit keeps each refit cheap and keeps regime labels stable along a path.
 
 A fit is accepted only if every parameter is finite and every row of $A$ sums to
 one. Otherwise the model is refitted from a cold start, and an error is raised if
-that fit also fails the check.
+that fit also fails the check. The regimes of a cold refit are numbered
+arbitrarily, so they are aligned to those of the previous fit (Section 1.6).
 
 ### 1.4 Posterior probabilities
 
@@ -148,7 +169,8 @@ numbering that does not depend on the starting values. When two regimes have
 nearly the same mean on the chosen factor, alignment is the more reliable rule.
 
 Re-estimation through time needs none of these after the first date: each refit
-starts from the previous one and keeps its labels.
+starts from the previous one and keeps its labels, and a refit that falls back to
+a cold start is aligned to the previous fit.
 
 Regimes are not given economic names. Whether a regime is better described as a
 bull market, a bear market or something else depends on the factors, the
